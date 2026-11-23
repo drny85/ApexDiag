@@ -14,6 +14,7 @@ pub mod hsfz;
 pub mod isotp;
 pub mod obd2;
 pub mod packs;
+pub mod replay;
 pub mod session;
 pub mod snapshot;
 pub mod vehicle;

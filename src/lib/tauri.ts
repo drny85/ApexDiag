@@ -414,6 +414,68 @@ export interface SavedTest {
   capture: string | null;
 }
 
+export interface MarkInfo {
+  mark_ms: number;
+  before_ms: number;
+  after_ms: number;
+}
+
+export interface ReplayFrame {
+  t_ms: number;
+  values: [number, number][];
+}
+
+export interface ReplayChange {
+  pid: number;
+  name: string;
+  unit: string;
+  usual: number;
+  peak: number;
+  offset_ms: number;
+  score: number;
+  text: string;
+}
+
+export interface ReplayCode {
+  code: string;
+  status: number | null;
+  description: string | null;
+}
+
+export interface ReplayModule {
+  name: string;
+  address: number;
+  present: boolean;
+  codes: ReplayCode[];
+}
+
+export interface Replay {
+  id: string;
+  vin: string;
+  vehicle: string;
+  simulated: boolean;
+  mark_ms: number;
+  note: string;
+  frames: ReplayFrame[];
+  changes: ReplayChange[];
+  engine_stored: ReplayCode[];
+  engine_pending: ReplayCode[];
+  modules: ReplayModule[];
+}
+
+export interface ReplaySummary {
+  id: string;
+  vin: string;
+  vehicle: string;
+  simulated: boolean;
+  mark_ms: number;
+  note: string;
+  seconds: number;
+  headline: string | null;
+  changes: number;
+  faults: number;
+}
+
 export const api = {
   catalog: () => call<Catalog>("catalog"),
   listDevices: () => call<DiscoveredDevice[]>("list_devices"),
@@ -447,4 +509,11 @@ export const api = {
   carTestStep: (step: string) => call<CarTestResult>("car_test_step", { step }),
   captureInfo: () => call<CaptureView>("capture_info"),
   saveCarTest: (report: unknown) => call<SavedTest>("save_car_test", { report }),
+  replayMark: (note?: string) => call<MarkInfo>("replay_mark", { note: note ?? null }),
+  replayCancel: () => call<void>("replay_cancel"),
+  replayFinish: (modules: boolean) => call<Replay>("replay_finish", { modules }),
+  listReplays: () => call<ReplaySummary[]>("list_replays"),
+  getReplay: (id: string) => call<Replay>("get_replay", { id }),
+  deleteReplay: (id: string) => call<void>("delete_replay", { id }),
+  simStumble: () => call<void>("sim_stumble"),
 };

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { Activity, AlertTriangle, BatteryMedium, Cable, ClipboardCheck, Cpu, Gauge, History, ListChecks, Power, Radar, Sparkles, Wrench, type LucideIcon } from "lucide-react";
+import { useEffect, useState } from "react";
+import { Activity, AlertTriangle, BatteryMedium, Cable, CheckCircle2, CircleDot, ClipboardCheck, Cpu, Gauge, History, ListChecks, Loader2, Power, Radar, Rewind, Sparkles, Wrench, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDiag } from "@/lib/store";
 import { fmt } from "@/lib/format";
@@ -13,14 +13,16 @@ import TimeMachine from "@/pages/TimeMachine";
 import QuickTest from "@/pages/QuickTest";
 import Copilot from "@/pages/Copilot";
 import CarTest from "@/pages/CarTest";
+import Replay from "@/pages/Replay";
 
-export type PageId = "connect" | "cartest" | "quicktest" | "copilot" | "dashboard" | "codes" | "modules" | "functions" | "timemachine" | "activity";
+export type PageId = "connect" | "cartest" | "quicktest" | "copilot" | "dashboard" | "replay" | "codes" | "modules" | "functions" | "timemachine" | "activity";
 
 const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "connect", label: "Connect", icon: Cable },
   { id: "cartest", label: "Car Test", icon: ClipboardCheck },
   { id: "quicktest", label: "Quick Test", icon: Radar },
   { id: "dashboard", label: "Live Data", icon: Activity },
+  { id: "replay", label: "Instant Replay", icon: Rewind },
   { id: "codes", label: "Fault Codes", icon: AlertTriangle },
   { id: "modules", label: "Modules", icon: Cpu },
   { id: "copilot", label: "Repair Copilot", icon: Sparkles },
@@ -33,6 +35,7 @@ const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
 const SHORT: Partial<Record<PageId, string>> = {
   quicktest: "Quick",
   dashboard: "Live",
+  replay: "Replay",
   codes: "Codes",
   functions: "Functions",
   timemachine: "History",
@@ -78,7 +81,7 @@ export default function App() {
       </aside>
 
       <div className="flex min-w-0 flex-1 flex-col">
-        <StatusBar />
+        <StatusBar go={setPage} />
         <main className="safe-bottom flex-1 overflow-auto overscroll-contain px-4 pb-10 pt-6 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-[1400px]" key={page + (connection ? "c" : "")}>
             {page === "connect" && <Connect go={setPage} />}
@@ -86,6 +89,7 @@ export default function App() {
             {page === "quicktest" && <QuickTest go={setPage} />}
             {page === "copilot" && <Copilot go={setPage} />}
             {page === "dashboard" && <Dashboard go={setPage} />}
+            {page === "replay" && <Replay go={setPage} />}
             {page === "codes" && <Codes go={setPage} />}
             {page === "modules" && <Modules go={setPage} />}
             {page === "functions" && <Functions />}
@@ -125,7 +129,7 @@ function ConnectionCard({ onClick }: { onClick: () => void }) {
   );
 }
 
-function StatusBar() {
+function StatusBar({ go }: { go: (p: PageId) => void }) {
   const { connection, live, vehicle } = useDiag();
   const rpm = live.get(0x0c);
   const speed = live.get(0x0d);
@@ -140,6 +144,7 @@ function StatusBar() {
       )}
       {connection ? (
         <>
+          <MarkButton go={go} />
           <Chip icon={Power} label="Engine" value={running === undefined ? "--" : running ? "Running" : "Off"} tone={running ? "info" : "muted"} />
           <Chip icon={Gauge} label="Speed" value={`${fmt(speed)} km/h`} tone={speed === 0 ? "ok" : "warn"} />
           <Chip icon={BatteryMedium} label="Battery" value={`${fmt(volts, 1)} V`} tone={volts === undefined ? "muted" : volts < 12.2 ? "warn" : "ok"} />
@@ -148,6 +153,86 @@ function StatusBar() {
         <span className="text-xs text-muted-foreground">No vehicle</span>
       )}
     </div>
+  );
+}
+
+/** Instant Replay's Mark button: always one tap away while connected. */
+function MarkButton({ go }: { go: (p: PageId) => void }) {
+  const { recording, savingReplay, lastReplay, replayError, markMoment, finishReplay, setOpenReplay } = useDiag();
+  const [now, setNow] = useState(Date.now());
+  const [showSaved, setShowSaved] = useState(false);
+
+  useEffect(() => {
+    if (!recording) return;
+    const id = setInterval(() => setNow(Date.now()), 250);
+    return () => clearInterval(id);
+  }, [recording]);
+
+  useEffect(() => {
+    if (!lastReplay) return;
+    setShowSaved(true);
+    const id = setTimeout(() => setShowSaved(false), 12_000);
+    return () => clearTimeout(id);
+  }, [lastReplay]);
+
+  if (savingReplay) {
+    return (
+      <span className="flex shrink-0 items-center gap-2 rounded-lg bg-rose-500/10 px-2.5 py-1 text-xs text-rose-200 ring-1 ring-inset ring-rose-400/25">
+        <Loader2 className="size-3.5 animate-spin" />
+        <span>
+          Saving replay<span className="hidden md:inline">, reading fault memory</span>…
+        </span>
+      </span>
+    );
+  }
+  if (recording) {
+    const left = Math.max(0, recording.after_ms - (now - recording.started));
+    const done = 1 - left / recording.after_ms;
+    const r = 7;
+    const c = 2 * Math.PI * r;
+    return (
+      <span className="flex shrink-0 items-center gap-2 rounded-lg bg-rose-500/10 py-1 pl-2 pr-1 text-xs text-rose-100 ring-1 ring-inset ring-rose-400/30">
+        <svg viewBox="0 0 18 18" className="size-4 -rotate-90">
+          <circle cx="9" cy="9" r={r} fill="none" stroke="#fb7185" strokeOpacity="0.25" strokeWidth="2.5" />
+          <circle cx="9" cy="9" r={r} fill="none" stroke="#fb7185" strokeWidth="2.5" strokeDasharray={c} strokeDashoffset={c * (1 - done)} />
+        </svg>
+        <span className="tabular-nums">
+          Recording<span className="hidden md:inline"> after the mark</span> · {Math.ceil(left / 1000)} s
+        </span>
+        <button onClick={finishReplay} className="rounded-md bg-white/10 px-2 py-0.5 font-medium hover:bg-white/15">
+          Save now
+        </button>
+      </span>
+    );
+  }
+  if (showSaved && lastReplay) {
+    return (
+      <button
+        onClick={() => {
+          setOpenReplay(lastReplay.id);
+          setShowSaved(false);
+          go("replay");
+        }}
+        className="flex shrink-0 items-center gap-2 rounded-lg bg-emerald-400/10 px-2.5 py-1 text-xs text-emerald-200 ring-1 ring-inset ring-emerald-400/25 hover:bg-emerald-400/15"
+      >
+        <CheckCircle2 className="size-3.5" />
+        <span>
+          Replay saved · <span className="font-medium underline-offset-2 hover:underline">View</span>
+        </span>
+      </button>
+    );
+  }
+  return (
+    <button
+      onClick={markMoment}
+      title={replayError ?? "Instant Replay: keep the 30 seconds before and after this moment"}
+      className="group flex shrink-0 items-center gap-2 rounded-lg bg-rose-500/15 px-2.5 py-1 text-xs font-medium text-rose-100 ring-1 ring-inset ring-rose-400/35 transition hover:bg-rose-500/25 active:scale-[0.97]"
+    >
+      <CircleDot className="size-3.5 text-rose-400 group-hover:animate-pulse" />
+      <span>
+        Mark<span className="hidden sm:inline"> moment</span>
+      </span>
+    </button>
   );
 }
 
