@@ -317,6 +317,7 @@ function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
 export const api = {
   catalog: () => call<Catalog>("catalog"),
   listDevices: () => call<DiscoveredDevice[]>("list_devices"),
+  scanBle: (all = false) => call<DiscoveredDevice[]>("scan_ble", { all }),
   connect: (id: string) => call<ConnectReport>("connect", { id }),
   disconnect: () => call<void>("disconnect"),
   readLive: (pids: number[]) => call<LiveValue[]>("read_live", { pids }),

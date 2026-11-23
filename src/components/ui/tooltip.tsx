@@ -5,9 +5,22 @@ import { cn } from "@/lib/utils";
 export const TooltipProvider = TooltipPrimitive.Provider;
 
 export function Tooltip({ content, children, className }: { content: React.ReactNode; children: React.ReactNode; className?: string }) {
+  // Radix tooltips open on hover only. On a touch screen a tap opens it and a
+  // tap anywhere else closes it.
+  const [open, setOpen] = React.useState(false);
   return (
-    <TooltipPrimitive.Root delayDuration={150}>
-      <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
+    <TooltipPrimitive.Root delayDuration={150} open={open} onOpenChange={setOpen}>
+      <TooltipPrimitive.Trigger
+        asChild
+        onClick={(e) => {
+          if (window.matchMedia("(pointer: coarse)").matches) {
+            e.preventDefault();
+            setOpen(true);
+          }
+        }}
+      >
+        {children}
+      </TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Content
           sideOffset={6}

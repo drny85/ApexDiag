@@ -8,6 +8,8 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+#[cfg(feature = "ble")]
+pub mod ble;
 pub mod elm;
 pub mod mock;
 pub mod sim;

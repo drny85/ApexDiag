@@ -20,6 +20,23 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
   const [lines, setLines] = useState<string[]>([]);
   const [step, setStep] = useState(0);
   const consoleRef = useRef<HTMLDivElement>(null);
+  const [scanning, setScanning] = useState(false);
+  const [scanned, setScanned] = useState(false);
+  const [showAll, setShowAll] = useState(false);
+
+  const scanBle = async (all = showAll) => {
+    setScanning(true);
+    setError(null);
+    try {
+      await api.scanBle(all);
+      setDevices(await api.listDevices());
+      setScanned(true);
+    } catch (e) {
+      setError(asCmdError(e).message);
+    } finally {
+      setScanning(false);
+    }
+  };
 
   useEffect(() => {
     api.listDevices().then(setDevices).catch((e) => setError(asCmdError(e).message));
@@ -76,25 +93,56 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
         <VehicleSummary go={go} />
       ) : (
         <>
-          <SectionTitle title="Adapters" hint="Your own adapter, plugged into the car." />
+          <div className="flex flex-wrap items-end justify-between gap-3">
+            <SectionTitle title="Adapters" hint="Your own adapter, plugged into the car with the ignition on." />
+            <div className="mb-3 flex items-center gap-2">
+              <label className="flex min-h-11 cursor-pointer items-center gap-2 px-2 text-xs text-muted-foreground">
+                <input
+                  type="checkbox"
+                  className="size-4 accent-cyan-400"
+                  checked={showAll}
+                  onChange={(e) => setShowAll(e.target.checked)}
+                />
+                Show all Bluetooth devices
+              </label>
+              <Button variant="outline" disabled={scanning || busy !== null} onClick={() => scanBle()}>
+                {scanning ? <Loader2 className="animate-spin" /> : <Radar />}
+                {scanning ? "Scanning" : scanned ? "Scan again" : "Scan Bluetooth"}
+              </Button>
+            </div>
+          </div>
           <div className="mb-7 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {devices
               .filter((d) => d.transport.kind !== "simulator")
               .map((d) => (
-                <div key={d.id} className={cn("flex flex-col rounded-2xl border border-white/[0.07] bg-white/[0.02] p-5", !d.available && "opacity-60")}>
+                <div key={d.id} className={cn("flex flex-col rounded-2xl border border-white/[0.07] bg-white/[0.02] p-5", !d.available && "border-dashed")}>
                   <div className="mb-4 flex items-center justify-between">
                     <div className="grid size-10 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
                       <Bluetooth className="size-5 text-cyan-300" />
                     </div>
-                    <Badge variant="muted">Next step</Badge>
+                    <Badge variant={d.available ? "default" : "muted"}>{d.available ? "Found" : "Not scanned"}</Badge>
                   </div>
                   <div className="font-medium">{d.name}</div>
                   <p className="mt-1 flex-1 text-sm text-muted-foreground">{d.detail}</p>
-                  <Button className="mt-5" disabled={!d.available || busy !== null} onClick={() => connect(d)}>
-                    <Plug /> Connect
-                  </Button>
+                  {d.available ? (
+                    <Button className="mt-5" disabled={busy !== null || scanning} onClick={() => connect(d)}>
+                      {busy === d.id ? <Loader2 className="animate-spin" /> : <Plug />}
+                      {busy === d.id ? "Connecting" : "Connect"}
+                    </Button>
+                  ) : (
+                    <Button className="mt-5" variant="secondary" disabled={scanning || busy !== null} onClick={() => scanBle()}>
+                      {scanning ? <Loader2 className="animate-spin" /> : <Radar />}
+                      {scanning ? "Scanning for 4 seconds" : "Scan Bluetooth"}
+                    </Button>
+                  )}
                 </div>
               ))}
+            {scanned && !devices.some((d) => d.transport.kind === "ble" && d.available) && (
+              <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.04] p-5 text-sm text-amber-100/80">
+                No OBD adapter answered. Check that the adapter's light is on and the ignition is on, then scan again.
+                If it still does not show, tick "Show all Bluetooth devices". Do not pair it in iPad Settings; ApexDiag connects to it directly.
+              </div>
+            )}
           </div>
           <SectionTitle title="Practice cars" hint="Simulated cars with invented faults, one per vehicle pack. Nothing here touches a real car." />
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">

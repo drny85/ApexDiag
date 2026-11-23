@@ -18,4 +18,4 @@ serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
 protocol-core.workspace = true
-transport.workspace = true
+transport = { workspace = true, features = ["ble"] }
