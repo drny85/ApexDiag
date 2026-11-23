@@ -17,16 +17,16 @@ chassis (UDS over DoIP).
 
 - Xcode Command Line Tools: `xcode-select --install`
 - Rust: https://rustup.rs
-- Node.js 22+
+- Bun: https://bun.sh
 
 ## Run it
 
 ```sh
-npm install
-npm run tauri dev           # desktop app with hot reload
-npm run dev                 # UI only, in a browser (uses stub data)
+bun install
+bun tauri dev               # desktop app with hot reload
+bun run dev                 # UI only, in a browser (uses stub data)
 cargo test --workspace      # Rust tests
-npm run tauri build -- --target aarch64-apple-darwin   # .app and .dmg
+bun tauri build --target aarch64-apple-darwin   # .app and .dmg
 ```
 
 ## Supported adapters
