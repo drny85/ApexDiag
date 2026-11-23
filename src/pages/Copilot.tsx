@@ -81,6 +81,8 @@ export default function Copilot({ go }: { go: (p: PageId) => void }) {
         /* no OBD codes available */
       }
       for (const { module, fault } of quickTestFaults(connection.vin)) {
+        // The engine module reports its OBD codes again with a suffix (P0456-00): list them once.
+        if (list.some((f) => f.module === null && fault.code.startsWith(f.code))) continue;
         list.push({ code: fault.code, module: module.name, description: fault.description, source: `${module.name} · Quick Test` });
       }
       setFaults(list);

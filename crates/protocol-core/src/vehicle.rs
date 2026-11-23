@@ -135,6 +135,7 @@ pub enum Make {
     MercedesBenz,
     Toyota,
     Honda,
+    Jeep,
     Generic,
 }
 
@@ -143,6 +144,8 @@ pub enum Make {
 pub enum BodyStyle {
     Suv,
     Sedan,
+    /// Body-on-frame off-roader: upright glass, short overhangs.
+    Offroad,
 }
 
 /// How sure we are of a pack's module map.
@@ -164,7 +167,7 @@ pub struct Pack {
     /// Brand as written by the maker.
     pub brand: &'static str,
     pub model: &'static str,
-    /// Chassis or generation code (E70, W167, XV70).
+    /// Chassis or generation code (E70, W167, XV70, JL).
     pub chassis: &'static str,
     pub years: &'static str,
     pub body: BodyStyle,
@@ -222,12 +225,13 @@ pub const GENERIC: Pack = Pack {
 };
 
 /// Every pack, most specific first.
-pub fn packs() -> [&'static Pack; 5] {
+pub fn packs() -> [&'static Pack; 6] {
     [
         &crate::bmw_e70::PACK,
         &crate::packs::mercedes_w167::PACK,
         &crate::packs::toyota_xv70::PACK,
         &crate::packs::honda_accord::PACK,
+        &crate::packs::jeep_jl::PACK,
         &GENERIC,
     ]
 }

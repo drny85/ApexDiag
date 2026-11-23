@@ -4,15 +4,15 @@
 //! (client, parser, ISO-TP, UI) can be developed and tested without a car.
 //! Values move over time so gauges have something to show.
 //!
-//! Four demo cars are available, one per vehicle pack: a BMW X5 (KWP2000
-//! with BMW extended addressing), a Mercedes-Benz GLE, a Toyota Camry and a
-//! Honda Accord (UDS on 11-bit CAN). Everything they report is invented, and
+//! Five demo cars are available, one per vehicle pack: a BMW X5 (KWP2000
+//! with BMW extended addressing), a Mercedes-Benz GLE, a Toyota Camry, a
+//! Honda Accord and a Jeep Wrangler (UDS on 11-bit CAN). Everything they report is invented, and
 //! every demo VIN starts with `SIMULATED`.
 
 use crate::{HardwareTransport, Result, TransportError};
 use async_trait::async_trait;
 use protocol_core::isotp::{segment, Addressing, FlowControl, Segmented};
-use protocol_core::packs::{honda_accord, mercedes_w167, toyota_xv70};
+use protocol_core::packs::{honda_accord, jeep_jl, mercedes_w167, toyota_xv70};
 use protocol_core::snapshot::RecordKind;
 use protocol_core::vehicle::{Link, Module, Pack, BMW_TESTER_ADDRESS, BMW_TESTER_ID};
 use protocol_core::{bmw_e70, CanId};
@@ -31,7 +31,7 @@ pub struct SimCar {
     pub pack: &'static Pack,
 }
 
-pub const SIM_CARS: [SimCar; 4] = [
+pub const SIM_CARS: [SimCar; 5] = [
     SimCar {
         id: "bmw_x5",
         label: "BMW X5 (E70)",
@@ -59,6 +59,13 @@ pub const SIM_CARS: [SimCar; 4] = [
         story: "Engine light on for catalyst efficiency, with a freeze frame from the moment it failed.",
         vin: "SIMULATED0ACC0004",
         pack: &honda_accord::PACK,
+    },
+    SimCar {
+        id: "jeep_wrangler",
+        label: "Jeep Wrangler (JL)",
+        story: "Engine light on for a small EVAP leak, and stop-start has quit: the charging voltage runs low with the engine on.",
+        vin: "SIMULATED0JLW0005",
+        pack: &jeep_jl::PACK,
     },
 ];
 
@@ -95,6 +102,14 @@ pub fn sim_fault_text(pack: &str, address: u8, code: &str) -> Option<&'static st
         ("honda_accord", 0xE0, "P0420-00") => "Demo: catalyst efficiency below threshold, bank 1",
         ("honda_accord", 0x50, "U0301-00") => {
             "Demo: camera software or aim mismatch after a windscreen change"
+        }
+        ("jeep_jl", 0xE0, "P0456-00") => "Demo: EVAP system, very small leak detected",
+        ("jeep_jl", 0xE0, "P0562-00") => "Demo: system voltage low (pending)",
+        ("jeep_jl", 0x42, "U3003-16") => {
+            "Demo: battery voltage below threshold, stop-start disabled"
+        }
+        ("jeep_jl", 0x24, "C0460-00") => {
+            "Demo: steering angle sensor not calibrated after an alignment (history)"
         }
         _ => return None,
     })
@@ -166,6 +181,8 @@ pub struct ElmSimulator {
     trims: Trims,
     /// The catalytic converter no longer stores oxygen (the Accord's story).
     cat_worn: bool,
+    /// The alternator undercharges with the engine running (the Jeep's story).
+    low_charge: bool,
     /// Requests seen, for tests.
     pub log: Vec<String>,
 }
@@ -200,6 +217,7 @@ impl ElmSimulator {
             records: BTreeMap::new(),
             leak: (0.0, 0.0),
             cat_worn: false,
+            low_charge: false,
             trims: Trims {
                 module: 0,
                 bank1: 0,
@@ -325,6 +343,51 @@ impl ElmSimulator {
                     bank2: None,
                 };
             }
+            "jeep_wrangler" => {
+                use jeep_jl::*;
+                // Park assist is not fitted on this trim.
+                self.faults = fitted(&PACK, &[PAM.address]);
+                self.faults.insert(
+                    PCM.address,
+                    vec![uds("P0456", 0x00, 0x2F), uds("P0562", 0x00, 0x24)],
+                );
+                self.faults
+                    .insert(BCM.address, vec![uds("U3003", 0x16, 0x09)]);
+                self.faults
+                    .insert(SCCM.address, vec![uds("C0460", 0x00, 0x08)]);
+                self.stored = vec![sae("P0456")];
+                self.pending = vec![sae("P0562")];
+                self.records = BTreeMap::from([
+                    ((PCM.address, 0x2701), w(120)),
+                    ((PCM.address, 0x2702), w(95)),
+                    ((TCM.address, 0x2801), w(52)),
+                    ((BCM.address, 0x2901), vec![1]),
+                    ((BCM.address, 0x2902), vec![1]),
+                    ((BCM.address, 0x2903), vec![30]),
+                ]);
+                self.monitors = (0x65, 0x00);
+                self.freeze = Some((
+                    sae("P0456"),
+                    BTreeMap::from([
+                        (0x04, vec![46]),         // load 18 %
+                        (0x05, vec![120]),        // coolant 80 °C
+                        (0x06, vec![129]),        // STFT +0.8 %
+                        (0x07, vec![129]),        // LTFT +0.8 %
+                        (0x0B, vec![38]),         // MAP 38 kPa
+                        (0x0C, vec![0x0A, 0xF0]), // 700 rpm
+                        (0x0D, vec![0]),          // parked
+                        (0x0F, vec![52]),         // intake 12 °C
+                        (0x11, vec![38]),         // throttle 15 %
+                    ]),
+                ));
+                self.leak = (1.2, 1.0);
+                self.low_charge = true;
+                self.trims = Trims {
+                    module: PCM.address,
+                    bank1: 0x2701,
+                    bank2: Some(0x2702),
+                };
+            }
             _ => {
                 use bmw_e70::*;
                 self.faults = fitted(&PACK, &[PDC.address, FZD.address]);
@@ -401,6 +464,10 @@ impl ElmSimulator {
                 self.cat_worn = false;
                 true
             }
+            Some("P0562" | "U3003") if self.low_charge => {
+                self.low_charge = false;
+                true
+            }
             _ => false,
         }
     }
@@ -461,7 +528,11 @@ impl ElmSimulator {
     /// System voltage the simulated car reports.
     fn volts(&self) -> f64 {
         if self.running() {
-            14.2
+            if self.low_charge {
+                12.9
+            } else {
+                14.2
+            }
         } else if self.charger {
             13.6
         } else {
@@ -1064,5 +1135,25 @@ mod tests {
         assert!(sim.ltft(1) > 9.0);
         assert!(sim.apply_demo_repair("P0171"));
         assert!(sim.ltft(1) < 1.0 && sim.leak.0 < 1.0);
+        let mut sim = ElmSimulator::with_car(sim_car("jeep_wrangler").unwrap(), SimEngine::Idling);
+        assert!(sim.volts() < 13.2);
+        assert!(sim.apply_demo_repair("P0562"));
+        assert!(sim.volts() > 13.5);
+    }
+
+    #[test]
+    fn jeep_tells_its_story() {
+        let car = sim_car("jeep_wrangler").unwrap();
+        assert_eq!(car.vin.len(), 17);
+        let sim = ElmSimulator::with_car(car, SimEngine::Idling);
+        assert_eq!(sim.stored, vec![sae("P0456")]);
+        assert_eq!(sim.pending, vec![sae("P0562")]);
+        // Park assist is not fitted; every fault has demo text.
+        assert!(!sim.faults.contains_key(&jeep_jl::PAM.address));
+        for (addr, code) in [(0xE0, "P0456-00"), (0x42, "U3003-16"), (0x24, "C0460-00")] {
+            assert!(sim_fault_text("jeep_jl", addr, code)
+                .unwrap()
+                .starts_with("Demo:"));
+        }
     }
 }

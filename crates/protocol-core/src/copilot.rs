@@ -371,6 +371,26 @@ pub const PLAYBOOKS: &[Playbook] = &[
         verify: "Clear the codes and drive. Fuel trims should stay within about ±5%.",
         verify_checks: &[Check::FuelTrims],
     },
+    Playbook {
+        id: "charging",
+        codes: &["P0562", "P0563"],
+        title: "System voltage out of range",
+        meaning: "The engine computer saw the electrical system voltage too low (P0562) or too high (P0563). Low voltage can set faults in many other modules too, so fix this first.",
+        causes: &[
+            cause("Weak or ageing battery", Common, "A battery that cannot hold charge drags the voltage down at start-up and with the engine off. Cars with engine stop-start notice first: stop-start simply stops working.", fix("Load-test the battery and replace it if it fails", Diy, (150, 400), "20-45 min", "Battery of the right type (AGM or flooded)", "Battery tester, hand tools, memory saver")),
+            cause("Loose or corroded battery cables or ground", Common, "Resistance at a terminal or ground strap looks like low voltage to the modules.", fix("Clean and tighten the terminals and grounds", Diy, (0, 60), "15-30 min", "Terminal cleaner, ground strap if damaged", "Wire brush, hand tools")),
+            cause("Alternator or its regulator", Possible, "Low output gives low running voltage. A failed regulator can also overcharge and set P0563.", fix("Test the output, then replace the alternator", Experienced, (300, 900), "1-3 h", "Alternator, belt if worn", "Hand tools, belt tool")),
+            cause("Worn drive belt", Possible, "A slipping belt cannot turn the alternator at full speed, especially with lights and blower on.", fix("Replace the belt and check the tensioner", Diy, (40, 200), "20-60 min", "Drive belt", "Belt tool")),
+            cause("Auxiliary battery (stop-start cars)", Rare, "Some stop-start systems use a small second battery. When it weakens, stop-start is disabled and a battery message may appear.", fix("Test and replace the auxiliary battery", Experienced, (100, 300), "30-90 min", "Auxiliary battery", "Battery tester, hand tools")),
+        ],
+        steps: &[
+            auto("charging", Check::Charging, "With the engine running, a healthy charging system holds about 13.5 to 14.8 V. Engine off and rested, a good battery shows 12.4 V or more."),
+            manual("terminals", "Inspect the battery terminals and grounds", "Look for white or green corrosion and wiggle each clamp. A clamp that moves by hand is loose.", Some("Wire brush, hand tools"), Some("Remove the negative cable first and refit it last. Batteries give off hydrogen: no sparks or flames.")),
+            manual("load", "Load-test the battery", "A conductance or load tester shows whether the battery can still deliver its rated cold cranking amps.", Some("Battery tester"), None),
+        ],
+        verify: "Clear the codes, then check the running voltage holds between about 13.5 and 14.8 V with lights and blower on.",
+        verify_checks: &[Check::Charging],
+    },
 ];
 
 /// General plans by the code's first letter, for codes without a playbook.

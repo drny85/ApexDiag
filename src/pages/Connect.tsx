@@ -97,7 +97,7 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
               ))}
           </div>
           <SectionTitle title="Practice cars" hint="Simulated cars with invented faults, one per vehicle pack. Nothing here touches a real car." />
-          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {devices
               .filter((d) => d.transport.kind === "simulator")
               .map((d) => {
@@ -165,6 +165,7 @@ const SIM_PACK: Record<string, string> = {
   "sim:mercedes_gle": "mercedes_w167",
   "sim:toyota_camry": "toyota_xv70",
   "sim:honda_accord": "honda_accord",
+  "sim:jeep_wrangler": "jeep_jl",
 };
 
 function SectionTitle({ title, hint }: { title: string; hint: string }) {
