@@ -8,6 +8,7 @@ import {
   AlertTriangle,
   BookOpen,
   CheckCircle2,
+  Lightbulb,
   ChevronRight,
   CircleDashed,
   ClipboardCheck,
@@ -31,6 +32,9 @@ import Empty from "@/components/Empty";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { CheckArt, DifficultyMeter } from "@/components/illustrations/Checks";
+import GuideArtView from "@/components/illustrations/GuideArt";
+import GuideView from "@/components/GuideView";
+import { CATEGORY_LABEL, GUIDES, guideForCause, type Guide, type GuideCategory } from "@/lib/guides";
 import { useDiag } from "@/lib/store";
 import { api, asCmdError, type CheckId, type CheckResult, type Playbook, type RepairRecord, type StepRecord, type Verdict } from "@/lib/tauri";
 import { quickTestFaults } from "@/pages/QuickTest";
@@ -58,6 +62,8 @@ export default function Copilot({ go }: { go: (p: PageId) => void }) {
   const [selected, setSelected] = useState<Fault | null>(null);
   const [lookup, setLookup] = useState("");
   const [history, setHistory] = useState<RepairRecord[]>([]);
+  const [guide, setGuide] = useState<Guide | null>(null);
+  const pack = connection?.vehicle.pack ?? null;
 
   const loadHistory = useCallback(() => {
     api.listRepairs().then(setHistory).catch(() => setHistory([]));
@@ -103,6 +109,8 @@ export default function Copilot({ go }: { go: (p: PageId) => void }) {
             <Plug /> <Tr>Connect</Tr>
           </Button>
         </Empty>
+        <GuideLibrary onOpen={setGuide} />
+        <GuideView guide={guide} pack={null} onClose={() => setGuide(null)} />
       </div>
     );
   }
@@ -165,22 +173,95 @@ export default function Copilot({ go }: { go: (p: PageId) => void }) {
               Open
             </Button>
           </form>
+          <GuideList onOpen={setGuide} />
           <History records={history} />
         </aside>
 
         {selected ? (
-          <PlanView key={`${selected.module}-${selected.code}`} fault={selected} simulated={connection.simulated} onSaved={loadHistory} />
+          <PlanView key={`${selected.module}-${selected.code}`} fault={selected} simulated={connection.simulated} onSaved={loadHistory} onGuide={setGuide} />
         ) : (
           <Empty icon={Sparkles} title="Pick a fault">
             Choose a fault on the left, or type any code to see its plan.
           </Empty>
         )}
       </div>
+      <GuideView guide={guide} pack={pack} onClose={() => setGuide(null)} />
     </div>
   );
 }
 
-function PlanView({ fault, simulated, onSaved }: { fault: Fault; simulated: boolean; onSaved: () => void }) {
+const CATEGORY_ORDER: GuideCategory[] = ["lights", "engine", "electrical", "fuel"];
+
+/** Compact list of every guide, for the side column. */
+function GuideList({ onOpen }: { onOpen: (g: Guide) => void }) {
+  return (
+    <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-3">
+      <h3 className="flex items-center gap-1.5 px-1 pb-1 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">
+        <Lightbulb className="size-3.5 text-cyan-300" /> Fix guides
+      </h3>
+      <p className="px-1 pb-2 text-[11px] text-muted-foreground">Illustrated, step by step, shown on your car in 3D.</p>
+      {CATEGORY_ORDER.map((c) => (
+        <div key={c} className="mt-1.5">
+          <div className="px-1 pb-0.5 text-[10px] font-medium uppercase tracking-[0.14em] text-muted-foreground/70">{CATEGORY_LABEL[c]}</div>
+          {GUIDES.filter((g) => g.category === c).map((g) => (
+            <button
+              key={g.id}
+              onClick={() => onOpen(g)}
+              className="flex min-h-9 w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-xs text-foreground/85 transition hover:bg-white/[0.05]"
+            >
+              <span className="min-w-0 flex-1 truncate">{g.title}</span>
+              <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+            </button>
+          ))}
+        </div>
+      ))}
+    </section>
+  );
+}
+
+/** The full guide library as cards, for when no car is connected. */
+function GuideLibrary({ onOpen }: { onOpen: (g: Guide) => void }) {
+  return (
+    <div className="mt-8 space-y-6">
+      <div>
+        <h3 className="flex items-center gap-2 text-sm font-semibold">
+          <Lightbulb className="size-4 text-cyan-300" /> Fix guides
+        </h3>
+        <p className="mt-0.5 text-xs text-muted-foreground">Illustrated how-tos you can use without a car connected. General guidance: check the owner's manual or the maker's service information for your car.</p>
+      </div>
+      {CATEGORY_ORDER.map((c) => (
+        <section key={c}>
+          <h4 className="mb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{CATEGORY_LABEL[c]}</h4>
+          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+            {GUIDES.filter((g) => g.category === c).map((g) => (
+              <button
+                key={g.id}
+                onClick={() => onOpen(g)}
+                className="group flex flex-col overflow-hidden rounded-2xl border border-white/[0.07] bg-white/[0.02] text-left transition hover:border-cyan-400/30 hover:bg-white/[0.04]"
+              >
+                <div className="grid place-items-center bg-black/25 p-2">
+                  <GuideArtView art={g.steps[Math.min(1, g.steps.length - 1)]!.art} className="h-28 w-full" />
+                </div>
+                <div className="flex flex-1 flex-col p-4">
+                  <span className="font-medium">{g.title}</span>
+                  <span className="mt-1 line-clamp-2 flex-1 text-xs text-muted-foreground">{g.summary}</span>
+                  <span className="mt-3 flex items-center gap-3 text-[11px] text-muted-foreground">
+                    <DifficultyMeter difficulty={g.difficulty} />
+                    <span className="inline-flex items-center gap-1">
+                      <Clock className="size-3" /> {g.time}
+                    </span>
+                  </span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function PlanView({ fault, simulated, onSaved, onGuide }: { fault: Fault; simulated: boolean; onSaved: () => void; onGuide: (g: Guide) => void }) {
   const [plan, setPlan] = useState<Playbook | null>(null);
   const [records, setRecords] = useState<Record<string, StepRecord>>({});
   const [running, setRunning] = useState<string | null>(null);
@@ -338,6 +419,14 @@ function PlanView({ fault, simulated, onSaved }: { fault: Fault; simulated: bool
                       <Wrench className="mt-0.5 size-3 shrink-0" /> {c.fix.tools}
                     </span>
                   </div>
+                  {(() => {
+                    const g = guideForCause(c.name);
+                    return g ? (
+                      <Button size="sm" variant="outline" className="mt-3" onClick={() => onGuide(g)}>
+                        <BookOpen /> Step-by-step guide
+                      </Button>
+                    ) : null;
+                  })()}
                 </div>
               </div>
             ))}
