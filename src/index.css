@@ -222,3 +222,22 @@ html.ios {
     opacity: 0;
   }
 }
+
+/* Drive Mode: readouts pinned to parts of the 3D car. */
+.car-tag {
+  color: #67e8f9;
+  border-color: rgb(103 232 249 / 0.3);
+  background: rgb(8 12 20 / 0.72);
+}
+.car-tag[data-level="warn"] {
+  color: #fcd34d;
+  border-color: rgb(251 191 36 / 0.5);
+}
+.car-tag[data-level="bad"] {
+  color: #fda4af;
+  border-color: rgb(251 113 133 / 0.6);
+}
+.car-tag[data-level="off"] {
+  color: #94a3b8;
+  border-color: rgb(148 163 184 / 0.25);
+}

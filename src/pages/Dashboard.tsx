@@ -1,4 +1,4 @@
-import { Activity, Pause, Play, Plug } from "lucide-react";
+import { Activity, CarFront, Pause, Play, Plug } from "lucide-react";
 import { useState } from "react";
 import Gauge from "@/components/Gauge";
 import Sparkline from "@/components/Sparkline";
@@ -58,11 +58,16 @@ export default function Dashboard({ go }: { go: (p: PageId) => void }) {
         title="Live Data"
         subtitle="Real-time readings from the engine module. Hover the ⓘ on any value to see what it means and what's normal."
         actions={
-          connection.simulated && (
-            <Button variant="outline" onClick={toggleEngine} disabled={toggling}>
-              {running ? <Pause /> : <Play />} {running ? t("Stop demo engine") : t("Start demo engine")}
+          <div className="flex flex-wrap gap-2">
+            {connection.simulated && (
+              <Button variant="outline" onClick={toggleEngine} disabled={toggling}>
+                {running ? <Pause /> : <Play />} {running ? t("Stop demo engine") : t("Start demo engine")}
+              </Button>
+            )}
+            <Button onClick={() => go("drive")}>
+              <CarFront /> {t("Drive Mode")}
             </Button>
-          )
+          </div>
         }
       />
 
