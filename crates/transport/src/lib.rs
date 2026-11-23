@@ -8,6 +8,10 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
+#[cfg(feature = "ble")]
+pub mod ble;
+pub mod capture;
+pub mod channel;
 pub mod elm;
 pub mod mock;
 pub mod sim;
@@ -70,6 +74,8 @@ pub trait HardwareTransport: Send {
     fn simulator(&mut self) -> Option<&mut sim::ElmSimulator> {
         None
     }
+    /// Adds a note to the raw capture, if this link is being captured.
+    fn capture_note(&mut self, _text: &str) {}
 }
 
 #[async_trait]
@@ -91,5 +97,8 @@ impl HardwareTransport for Box<dyn HardwareTransport + Send> {
     }
     fn simulator(&mut self) -> Option<&mut sim::ElmSimulator> {
         (**self).simulator()
+    }
+    fn capture_note(&mut self, text: &str) {
+        (**self).capture_note(text)
     }
 }

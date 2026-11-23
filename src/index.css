@@ -159,3 +159,58 @@
 @media (prefers-reduced-motion: reduce) {
   .ill *, .ill-motion { animation: none !important; }
 }
+
+/* ---- Touch devices (iPad) ------------------------------------------- */
+html,
+body {
+  overscroll-behavior: none;
+  -webkit-text-size-adjust: 100%;
+}
+body {
+  -webkit-tap-highlight-color: transparent;
+}
+/* Safe-area padding for the iPad home indicator and rounded corners. */
+.safe-shell {
+  /* WKWebView in Tauri can report a zero top inset; keep the content clear
+     of the iPad status bar anyway (24 pt). */
+  padding-top: max(env(safe-area-inset-top), var(--status-bar, 0px));
+  padding-left: env(safe-area-inset-left);
+  padding-right: env(safe-area-inset-right);
+}
+.safe-bottom {
+  padding-bottom: max(0.75rem, env(safe-area-inset-bottom));
+}
+html.ios {
+  --status-bar: 24px;
+}
+@media (pointer: coarse) {
+  :root {
+    --status-bar: 24px;
+  }
+  /* Interface chrome should not start a text selection or a callout on a
+     long press; readings, codes and VINs stay selectable. */
+  button,
+  nav,
+  [data-slot="button"],
+  [role="tab"] {
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-touch-callout: none;
+  }
+  /* Apple's minimum touch target is 44 x 44 pt. */
+  [data-slot="button"] {
+    min-height: 44px;
+  }
+  [data-slot="button"][data-size="icon"] {
+    min-width: 44px;
+  }
+  input[type="checkbox"],
+  input[type="radio"] {
+    min-width: 22px;
+    min-height: 22px;
+  }
+  /* Hover-only flourishes stay off; the active state gives touch feedback. */
+  [data-slot="button"]:active {
+    transform: scale(0.97);
+  }
+}

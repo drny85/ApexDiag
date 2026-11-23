@@ -59,8 +59,13 @@ export default function CarMap({
               className={cn(onPick && "cursor-pointer")}
               onMouseEnter={() => setHover(m.address)}
               onMouseLeave={() => setHover(null)}
-              onClick={() => onPick?.(m)}
+              onClick={() => {
+                setHover(m.address);
+                onPick?.(m);
+              }}
             >
+              {/* Finger-sized hit area around the dot. */}
+              <circle cx={p.x} cy={p.y} r="16" fill="transparent" />
               {st === "fault" && <circle cx={p.x} cy={p.y} r="6" fill={color} style={{ animation: "ill-ping 1.8s ease-out infinite" }} />}
               {(st === "scanning" || (scanning && st === "unknown")) && (
                 <circle cx={p.x} cy={p.y} r="6" fill="#67e8f9" style={{ animation: "ill-ping 1s ease-out infinite" }} />

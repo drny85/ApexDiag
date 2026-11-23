@@ -28,3 +28,16 @@ jobs:
       - run: bun install --frozen-lockfile
       - run: bun run build
       - run: cargo build -p apexdiag
+
+  # Windows readiness: the same app, Bluetooth LE through WinRT.
+  windows-app:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - run: cargo test -p protocol-core -p transport
+      - run: cargo build -p apexdiag

@@ -385,9 +385,39 @@ function call<T>(cmd: string, args?: Record<string, unknown>): Promise<T> {
   return invoke<T>(cmd, args);
 }
 
+export interface CarTestStepInfo {
+  id: string;
+  title: string;
+  what: string;
+  why: string;
+}
+
+export interface CarTestResult {
+  id: string;
+  ok: boolean;
+  skipped: boolean;
+  headline: string;
+  details: string[];
+  data: unknown;
+  elapsed_ms: number;
+}
+
+export interface CaptureView {
+  path: string | null;
+  bytes: number;
+  tail: string[];
+}
+
+export interface SavedTest {
+  folder: string;
+  report: string;
+  capture: string | null;
+}
+
 export const api = {
   catalog: () => call<Catalog>("catalog"),
   listDevices: () => call<DiscoveredDevice[]>("list_devices"),
+  scanBle: (all = false) => call<DiscoveredDevice[]>("scan_ble", { all }),
   connect: (id: string) => call<ConnectReport>("connect", { id }),
   disconnect: () => call<void>("disconnect"),
   readLive: (pids: number[]) => call<LiveValue[]>("read_live", { pids }),
@@ -413,4 +443,8 @@ export const api = {
   simApplyRepair: (code: string) => call<boolean>("sim_apply_repair", { code }),
   saveRepair: (record: RepairRecord) => call<RepairRecord>("save_repair", { record }),
   listRepairs: () => call<RepairRecord[]>("list_repairs"),
+  carTestPlan: () => call<CarTestStepInfo[]>("car_test_plan"),
+  carTestStep: (step: string) => call<CarTestResult>("car_test_step", { step }),
+  captureInfo: () => call<CaptureView>("capture_info"),
+  saveCarTest: (report: unknown) => call<SavedTest>("save_car_test", { report }),
 };
