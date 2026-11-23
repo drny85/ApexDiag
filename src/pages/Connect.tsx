@@ -347,8 +347,8 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
             <Radar className="size-5 text-cyan-200" />
           </div>
           <div className="flex-1">
-            <div className="font-medium">{t("Run a Quick Test")}</div>
-            <div className="text-xs text-muted-foreground">{t("Every module, every fault, emissions readiness. About a minute on a real car.")}</div>
+            <div className="font-medium">{t("Run a full scan")}</div>
+            <div className="text-xs text-muted-foreground">{t("Every module and every reading, each explained. About a minute on a real car.")}</div>
           </div>
           <ArrowRight className="size-4 text-cyan-200 transition group-hover:translate-x-0.5" />
         </button>

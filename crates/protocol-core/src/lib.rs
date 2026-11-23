@@ -10,6 +10,7 @@ pub mod copilot;
 pub mod diag;
 pub mod doip;
 pub mod elm327;
+pub mod full_scan;
 pub mod hsfz;
 pub mod inspection;
 pub mod isotp;

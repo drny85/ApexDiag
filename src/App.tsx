@@ -22,7 +22,7 @@ export type PageId = "connect" | "cartest" | "quicktest" | "inspection" | "copil
 const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "connect", label: "Connect", icon: Cable },
   { id: "cartest", label: "Car Test", icon: ClipboardCheck },
-  { id: "quicktest", label: "Quick Test", icon: Radar },
+  { id: "quicktest", label: "Full Scan", icon: Radar },
   { id: "inspection", label: "Inspection Report", icon: ClipboardList },
   { id: "dashboard", label: "Live Data", icon: Activity },
   { id: "replay", label: "Instant Replay", icon: Rewind },
@@ -36,7 +36,7 @@ const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
 
 /** Labels for the narrow icon rail. */
 const SHORT: Partial<Record<PageId, string>> = {
-  quicktest: "Quick",
+  quicktest: "Scan",
   inspection: "Inspect",
   dashboard: "Live",
   replay: "Replay",

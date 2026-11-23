@@ -12,6 +12,7 @@ mod timemachine;
 
 use protocol_core::catalog::{self, Function, Requirement, RiskTier, VehicleState};
 use protocol_core::copilot::{self, Check, CheckResult, Playbook, RepairRecord, Samples};
+use protocol_core::full_scan;
 use protocol_core::inspection::{self, Readings};
 use protocol_core::obd2::{self, Dtc, MilStatus, PidInfo, Readiness, Service};
 use protocol_core::replay;
@@ -51,6 +52,11 @@ struct Inner {
     mark: Option<(u64, String)>,
     /// Inspection report: what was read before the module scan.
     inspection: Option<Readings>,
+    /// Service 01 PIDs the engine module said it supports, read once at
+    /// connect so later scans only ask for values the car has.
+    supported_pids: Vec<u8>,
+    /// Full scan: what was read before the module scan.
+    full_scan: Option<full_scan::Input>,
 }
 
 #[derive(Default)]
@@ -685,6 +691,8 @@ async fn connect(
     inner.capture = capture_path;
     inner.replay.clear();
     inner.mark = None;
+    inner.supported_pids = supported_pids.clone();
+    inner.full_scan = None;
     let target = vin.clone().unwrap_or_else(|| "vehicle".into());
     inner.record(
         "Connect",
@@ -727,6 +735,8 @@ async fn disconnect(state: State<'_, AppState>) -> CmdResult<()> {
     inner.pack = None;
     inner.replay.clear();
     inner.mark = None;
+    inner.supported_pids.clear();
+    inner.full_scan = None;
     Ok(())
 }
 
@@ -742,12 +752,13 @@ struct LiveValue {
 async fn read_live(state: State<'_, AppState>, pids: Vec<u8>) -> CmdResult<Vec<LiveValue>> {
     let mut inner = state.0.lock().await;
     let c = inner.client()?;
-    let mut out = Vec::with_capacity(pids.len());
-    for pid in pids {
-        if let Ok(value) = c.read_pid(pid).await {
-            out.push(LiveValue { pid, value });
-        }
-    }
+    // Up to six PIDs per request where the car allows it.
+    let out: Vec<LiveValue> = c
+        .read_pids(&pids)
+        .await
+        .into_iter()
+        .map(|(pid, value)| LiveValue { pid, value })
+        .collect();
     let frame = out.iter().map(|v| (v.pid, v.value)).collect();
     inner.replay.push(now_ms() as u64, frame);
     Ok(out)
@@ -938,11 +949,19 @@ async fn scan_one(
     m: &'static Module,
 ) -> ModuleScan {
     let started = std::time::Instant::now();
-    let present = c.probe(m).await.unwrap_or(false);
-    let dtcs = if present {
-        c.read_module_dtcs(m).await.ok()
-    } else {
-        None
+    // Ask for the fault memory straight away: any reply, even a refusal,
+    // proves the module is there, so fitted modules cost one round trip
+    // instead of two. Only when that gets no clean answer is Tester Present
+    // asked, so "present" means exactly what it did before.
+    let (present, dtcs) = match c.read_module_dtcs(m).await {
+        Ok(d) => (true, Some(d)),
+        Err(ClientError::Protocol(protocol_core::ProtocolError::NegativeResponse { .. })) => {
+            (true, None)
+        }
+        // The adapter can't address this module at all (no AT CEA on a
+        // BMW), or the link failed: nothing to gain from asking again.
+        Err(ClientError::Unsupported(_)) | Err(ClientError::Transport(_)) => (false, None),
+        Err(_) => (c.probe(m).await.unwrap_or(false), None),
     };
     let codes = dtcs
         .iter()
@@ -2012,6 +2031,147 @@ async fn inspection_finish(
     })
 }
 
+// ---- commands: Full scan --------------------------------------------------
+
+#[derive(Serialize)]
+struct FullScanStarted {
+    engine_running: Option<bool>,
+    /// Live values read, for the progress line.
+    values: usize,
+    codes: usize,
+}
+
+/// Step one of the full scan: everything the engine module can tell over
+/// OBD-II, read with as few requests as possible (see
+/// [`transport::full_scan::read_engine`]). The page then scans the modules
+/// one by one for progress. Read-only.
+#[tauri::command]
+async fn full_scan_start(state: State<'_, AppState>) -> CmdResult<FullScanStarted> {
+    let mut inner = state.0.lock().await;
+    let supported = inner.supported_pids.clone();
+    let c = inner.client()?;
+    c.link_mut()
+        .capture_note("Full scan: readiness, codes, live values, battery");
+    let e = transport::full_scan::read_engine(c, &supported).await;
+    let adapter = c.info().cloned();
+    inner.replay.push(now_ms() as u64, e.live.to_vec());
+    let pack = inner.pack();
+    let started = FullScanStarted {
+        engine_running: e.engine_running,
+        values: e.live.len(),
+        codes: e.stored.as_ref().map_or(0, Vec::len) + e.pending.len(),
+    };
+    inner.full_scan = Some(full_scan::Input {
+        vin: inner.vin.as_deref().map(|v| vin::decode(v, current_year())),
+        vehicle: format!("{} {}", pack.brand, pack.model),
+        is_bmw: pack
+            .modules
+            .iter()
+            .any(|m| m.link == vehicle::Link::BmwExtended),
+        simulated: inner.simulated(),
+        adapter_version: adapter.as_ref().map(|a| a.version.clone()),
+        adapter_extended: adapter.map(|a| a.supports_extended_addressing),
+        readiness: e.readiness,
+        stored: e.stored,
+        pending: e.pending,
+        permanent: e.permanent,
+        freeze_frame: e.freeze_frame,
+        battery_v: e.battery_v,
+        engine_running: e.engine_running,
+        live: e.live,
+        modules: Vec::new(),
+        modules_not_scanned: 0,
+    });
+    Ok(started)
+}
+
+#[derive(serde::Deserialize)]
+struct FullScanCode {
+    code: String,
+    status: u8,
+    description: Option<String>,
+}
+
+#[derive(serde::Deserialize)]
+struct FullScanModule {
+    address: u8,
+    present: bool,
+    codes: Vec<FullScanCode>,
+}
+
+#[derive(Serialize)]
+struct FullScanView {
+    report: full_scan::Report,
+    vin: Option<String>,
+    vehicle: String,
+    simulated: bool,
+    at_ms: u64,
+}
+
+/// Step two: adds the page's module scan and builds the results page.
+#[tauri::command]
+async fn full_scan_finish(
+    state: State<'_, AppState>,
+    modules: Vec<FullScanModule>,
+    lang: Option<inspection::Lang>,
+) -> CmdResult<FullScanView> {
+    let mut inner = state.0.lock().await;
+    let mut input = inner
+        .full_scan
+        .take()
+        .ok_or_else(|| CmdError::new("not_started", "Start the full scan first."))?;
+    let pack = inner.pack();
+    let allowed = scan_list(&inner);
+    input.modules = modules
+        .into_iter()
+        .filter_map(|m| {
+            let info = pack.module(m.address)?;
+            Some(full_scan::ModuleRead {
+                name: info.name.to_string(),
+                description: info.description.to_string(),
+                role: info.role.to_string(),
+                system: info.system,
+                present: m.present,
+                codes: m
+                    .codes
+                    .into_iter()
+                    .map(|c| full_scan::ModuleCode {
+                        code: c.code,
+                        description: c.description,
+                        state: match info.protocol {
+                            protocol_core::diag::Protocol::Uds => {
+                                full_scan::CodeState::from_uds(c.status)
+                            }
+                            protocol_core::diag::Protocol::Kwp2000 => full_scan::CodeState::Stored,
+                        },
+                    })
+                    .collect(),
+            })
+        })
+        .collect();
+    input.modules_not_scanned = pack.modules.len().saturating_sub(allowed.len());
+    let report = full_scan::build(&input, lang.unwrap_or_default());
+    let found = input.modules.iter().filter(|m| m.present).count();
+    let faults: usize = input.modules.iter().map(|m| m.codes.len()).sum();
+    inner.record(
+        "Full scan",
+        "Whole car",
+        RiskTier::Read,
+        true,
+        format!(
+            "{found} modules answered, {faults} module faults; {} problems, {} to check",
+            report.counts.problem, report.counts.attention
+        ),
+    );
+    Ok(FullScanView {
+        report,
+        vin: inner.vin.clone(),
+        vehicle: format!("{} {}", pack.brand, pack.model),
+        simulated: inner.simulated(),
+        at_ms: now_ms() as u64,
+    })
+}
+
 /// Saves a report the page has rendered (HTML for people, JSON for tools)
 /// to the documents folder. Returns the saved path.
 #[tauri::command]
@@ -2099,6 +2259,8 @@ pub fn run() {
             sim_stumble,
             inspection_start,
             inspection_finish,
+            full_scan_start,
+            full_scan_finish,
             save_document,
         ])
         .run(tauri::generate_context!())

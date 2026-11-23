@@ -39,6 +39,9 @@ interface DiagContextValue {
   finishReplay: () => Promise<void>;
   openReplay: string | null;
   setOpenReplay: (id: string | null) => void;
+  /** Holds live-data and state polling while a scan has the adapter, so
+   * the scan isn't slowed down by requests in between its own. */
+  pauseLive: (on: boolean) => void;
 }
 
 const DiagContext = createContext<DiagContextValue | null>(null);
@@ -57,6 +60,10 @@ export function DiagProvider({ children }: { children: ReactNode }) {
   const [replayError, setReplayError] = useState<string | null>(null);
   const [openReplay, setOpenReplay] = useState<string | null>(null);
   const finishing = useRef(false);
+  const paused = useRef(false);
+  const pauseLive = useCallback((on: boolean) => {
+    paused.current = on;
+  }, []);
 
   const finishReplay = useCallback(async () => {
     if (finishing.current) return;
@@ -111,6 +118,10 @@ export function DiagProvider({ children }: { children: ReactNode }) {
     let stop = false;
     (async () => {
       while (!stop) {
+        if (paused.current) {
+          await new Promise((r) => setTimeout(r, 250));
+          continue;
+        }
         const started = performance.now();
         try {
           const values = await api.readLive(pids);
@@ -137,6 +148,7 @@ export function DiagProvider({ children }: { children: ReactNode }) {
   }, [connection]);
 
   const refreshVehicle = useCallback(async () => {
+    if (paused.current) return;
     try {
       setVehicle(await api.vehicleState());
     } catch {
@@ -176,8 +188,9 @@ export function DiagProvider({ children }: { children: ReactNode }) {
       finishReplay,
       openReplay,
       setOpenReplay,
+      pauseLive,
     }),
-    [catalog, connection, live, vehicle, refreshVehicle, revision, focus, recording, savingReplay, lastReplay, replayError, markMoment, finishReplay, openReplay],
+    [catalog, connection, live, vehicle, refreshVehicle, revision, focus, recording, savingReplay, lastReplay, replayError, markMoment, finishReplay, openReplay, pauseLive],
   );
 
   return <DiagContext.Provider value={value}>{children}</DiagContext.Provider>;

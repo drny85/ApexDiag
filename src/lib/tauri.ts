@@ -508,6 +508,45 @@ export interface InspectionView {
   at_ms: number;
 }
 
+export type ScanStatus = "not_read" | "info" | "good" | "attention" | "problem";
+export type ScanArea = "engine" | "emissions" | "electrical" | "modules" | "vehicle";
+
+export interface ScanItem {
+  id: string;
+  area: ScanArea;
+  title: string;
+  value: string | null;
+  status: ScanStatus;
+  headline: string;
+  what: string;
+  problem: string | null;
+  fix: string[];
+  facts: { label: string; value: string }[];
+  guide: { code: string; playbook: boolean; title: string } | null;
+  module: string | null;
+}
+
+export interface FullScanView {
+  report: {
+    overall: ScanStatus;
+    title: string;
+    summary: string;
+    counts: { problem: number; attention: number; good: number; info: number; not_read: number };
+    items: ScanItem[];
+    tips: string[];
+  };
+  vin: string | null;
+  vehicle: string;
+  simulated: boolean;
+  at_ms: number;
+}
+
+export interface FullScanStarted {
+  engine_running: boolean | null;
+  values: number;
+  codes: number;
+}
+
 export const api = {
   catalog: () => call<Catalog>("catalog"),
   listDevices: () => call<DiscoveredDevice[]>("list_devices"),
@@ -551,5 +590,8 @@ export const api = {
   inspectionStart: () => call<void>("inspection_start"),
   inspectionFinish: (modules: { address: number; present: boolean; codes: InspectionCode[] }[], lang: "en" | "es" = "en") =>
     call<InspectionView>("inspection_finish", { modules, lang }),
+  fullScanStart: () => call<FullScanStarted>("full_scan_start"),
+  fullScanFinish: (modules: { address: number; present: boolean; codes: ModuleFault[] }[], lang: "en" | "es" = "en") =>
+    call<FullScanView>("full_scan_finish", { modules, lang }),
   saveDocument: (name: string, contents: string) => call<string>("save_document", { name, contents }),
 };

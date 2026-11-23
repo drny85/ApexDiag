@@ -210,6 +210,56 @@ pub fn decode_current_data(payload: &[u8]) -> Result<(u8, f64), ProtocolError> {
     Ok((*pid, value))
 }
 
+/// Most PIDs one Service 01 request may carry on CAN (SAE J1979).
+pub const MAX_PIDS_PER_REQUEST: usize = 6;
+
+/// One Service 01 request for several PIDs at once (`01 0C 0D 05 ...`).
+/// Saves a round trip per value; the engine module answers with one
+/// message holding each PID it supports, in order.
+pub fn multi_pid_request(pids: &[u8]) -> Vec<u8> {
+    let mut req = vec![Service::CurrentData as u8];
+    req.extend(pids.iter().take(MAX_PIDS_PER_REQUEST));
+    req
+}
+
+/// How many data bytes a PID's reply carries (SAE J1979), which can be
+/// more than the app's formula uses: oxygen sensor PIDs 14-1B send the
+/// voltage and a trim byte.
+pub fn reply_len(pid: u8) -> usize {
+    match pid {
+        0x14..=0x1B | 0x3C..=0x3F => 2,
+        0x24..=0x2B | 0x34..=0x3B => 4,
+        _ => pid_info(pid).map_or(0, |i| i.formula.bytes_needed()),
+    }
+}
+
+/// Decodes a multi-PID reply (`41 PID data PID data ...`). Stops at the
+/// first PID the app has no formula for, since its length is unknown.
+pub fn decode_multi_pid(payload: &[u8]) -> Result<Vec<(u8, f64)>, ProtocolError> {
+    let (&sid, mut rest) = payload
+        .split_first()
+        .ok_or(ProtocolError::MalformedFrame("empty live data reply"))?;
+    if sid != Service::CurrentData.response_sid() {
+        return Err(ProtocolError::UnexpectedFrame);
+    }
+    let mut out = Vec::new();
+    while let [pid, data @ ..] = rest {
+        let Some(info) = pid_info(*pid) else { break };
+        let n = reply_len(*pid).max(info.formula.bytes_needed());
+        if data.len() < n {
+            break;
+        }
+        if let Some(v) = info.formula.apply(&data[..n]) {
+            out.push((*pid, v));
+        }
+        rest = &data[n..];
+    }
+    if out.is_empty() {
+        return Err(ProtocolError::MalformedFrame("live data reply too short"));
+    }
+    Ok(out)
+}
+
 /// Decodes a "PIDs supported" bitmap reply (`41 00 A B C D`, `41 20 ...`).
 pub fn decode_supported_pids(payload: &[u8]) -> Result<Vec<u8>, ProtocolError> {
     let [sid, base, a, b, c, d, ..] = *payload else {
@@ -618,5 +668,29 @@ mod tests {
             decode_freeze_frame_dtc(&[0x42, 0x02, 0x00, 0, 0]).unwrap(),
             None
         );
+    }
+
+    #[test]
+    fn decodes_multi_pid_reply() {
+        assert_eq!(
+            multi_pid_request(&[0x0C, 0x0D, 0x05, 0x04, 0x06, 0x07, 0x0B]),
+            vec![0x01, 0x0C, 0x0D, 0x05, 0x04, 0x06, 0x07]
+        );
+        // rpm 800, speed 0, coolant 90 °C, LTFT B1 +10.2%
+        let v = decode_multi_pid(&[0x41, 0x0C, 0x0C, 0x80, 0x0D, 0x00, 0x05, 0x82, 0x07, 0x8D])
+            .unwrap();
+        assert_eq!(v.len(), 4);
+        assert_eq!(v[0], (0x0C, 800.0));
+        assert_eq!(v[1], (0x0D, 0.0));
+        assert_eq!(v[2], (0x05, 90.0));
+        assert!((v[3].1 - 10.15).abs() < 0.01);
+        // An unknown PID ends the walk without losing what came before.
+        // Oxygen sensor PIDs carry two bytes; the walk must skip both.
+        let v = decode_multi_pid(&[0x41, 0x14, 0x5A, 0xFF, 0x05, 0x82]).unwrap();
+        assert_eq!(v, vec![(0x14, 0.45), (0x05, 90.0)]);
+        let v = decode_multi_pid(&[0x41, 0x05, 0x82, 0xEE, 0x01, 0x02]).unwrap();
+        assert_eq!(v, vec![(0x05, 90.0)]);
+        assert!(decode_multi_pid(&[0x41]).is_err());
+        assert!(decode_multi_pid(&[0x7F, 0x01, 0x12]).is_err());
     }
 }
