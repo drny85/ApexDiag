@@ -1,0 +1,10 @@
+[package]
+name = "protocol-core"
+description = "Pure-Rust diagnostic protocol state machines: ISO-TP, ELM327/STN, SAE J1979, BMW KWP2000/UDS"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
