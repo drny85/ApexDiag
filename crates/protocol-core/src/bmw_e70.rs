@@ -221,6 +221,95 @@ pub const JOBS: &[Job] = &[
     },
 ];
 
+// ---- Time Machine records ---------------------------------------------
+
+use crate::snapshot::{Format, RecordDef, RecordKind};
+
+const OFF_ON: &[(u8, &str)] = &[(0x00, "Off"), (0x01, "On")];
+
+const fn num(bytes: u8, signed: bool, scale: f64, unit: &'static str, digits: u8) -> Format {
+    Format::Number {
+        bytes,
+        signed,
+        scale,
+        unit,
+        digits,
+    }
+}
+
+const fn rec(
+    module: Module,
+    lid: u8,
+    name: &'static str,
+    kind: RecordKind,
+    format: Format,
+    explain: &'static str,
+) -> RecordDef {
+    RecordDef {
+        module: module.address,
+        lid,
+        name,
+        kind,
+        format,
+        explain,
+        status: JobStatus::PendingCapture,
+    }
+}
+
+use RecordKind::{Adaptation, Coding};
+
+/// Records the Time Machine reads from each module.
+///
+/// These identifiers are a demo layout used by the simulated car. None are
+/// confirmed on a real E70 yet, so on a real car the Time Machine reads only
+/// identification and fault memory until each record is verified.
+pub const RECORDS: &[RecordDef] = &[
+    // DME: engine
+    rec(DME, 0x01, "Mixture adaptation, bank 1", Adaptation, num(2, true, 0.01, "%", 2),
+        "How much extra (+) or less (-) fuel the engine has learned to add on cylinders 1-3. Near 0 is healthy. A steady climb usually means unmetered air: a vacuum leak, a cracked crankcase vent valve, or a weak fuel pump."),
+    rec(DME, 0x02, "Mixture adaptation, bank 2", Adaptation, num(2, true, 0.01, "%", 2),
+        "The same learned fuel correction for cylinders 4-6. When both banks drift together the cause is shared, like a vacuum leak; when only one drifts, look at that bank's injectors or intake gasket."),
+    rec(DME, 0x03, "Idle speed correction", Adaptation, num(2, true, 1.0, "rpm", 0),
+        "How much the engine has learned to raise idle to stay smooth. Creeping upward points to a dirty throttle or a vacuum leak."),
+    rec(DME, 0x04, "Intake VANOS adaptation", Adaptation, num(2, true, 0.1, "°CRK", 1),
+        "Learned offset of the intake camshaft timing. Growing offsets suggest a sticking VANOS solenoid or a stretching timing chain."),
+    rec(DME, 0x05, "Throttle valve adaptation", Adaptation, num(2, false, 0.01, "%", 2),
+        "Learned closed position of the throttle. Carbon build-up moves it over time; a jump after cleaning is normal."),
+    rec(DME, 0x10, "Top speed limiter", Coding, num(1, false, 1.0, "km/h", 0),
+        "Maximum speed the engine allows. Set by tyre speed rating; raising it beyond the tyres' rating is unsafe."),
+    rec(DME, 0x11, "Fuel grade", Coding, Format::Choice { options: &[(0x00, "Premium 95 RON / 91 AKI"), (0x01, "Regular 91 RON / 87 AKI")] },
+        "Which fuel the ignition map expects. Coding regular when you run premium costs a little power; the opposite risks knock."),
+    // EGS: transmission
+    rec(EGS, 0x30, "Clutch fill pressure, A", Adaptation, num(2, true, 0.001, "bar", 3),
+        "Learned extra pressure needed to engage clutch A. Rising values mean the transmission is compensating for wear or old fluid."),
+    rec(EGS, 0x31, "Clutch fill pressure, B", Adaptation, num(2, true, 0.001, "bar", 3),
+        "Learned extra pressure for clutch B. Compare with A: one clutch drifting alone points to that clutch pack."),
+    rec(EGS, 0x32, "Shift adaptations learned", Adaptation, num(2, false, 1.0, "shifts", 0),
+        "How many shifts the transmission has learned from since the last reset. A drop means someone reset the adaptations."),
+    // FRM: lights
+    rec(FRM, 0x20, "Daytime running lights", Coding, Format::Choice { options: OFF_ON },
+        "Whether the angel eyes stay on as daytime running lights whenever the engine runs."),
+    rec(FRM, 0x21, "Comfort turn signal", Coding, num(1, false, 1.0, "flashes", 0),
+        "How many times the indicator flashes after a light tap of the stalk."),
+    rec(FRM, 0x22, "Fog lights with high beam", Coding, Format::Choice { options: &[(0x00, "Fogs switch off"), (0x01, "Fogs stay on")] },
+        "Whether the front fog lights stay on when high beam is switched on. Some countries require them to switch off."),
+    // CAS: access
+    rec(CAS, 0x40, "Comfort open with remote", Coding, Format::Choice { options: OFF_ON },
+        "Holding unlock on the key opens all windows and the sunroof."),
+    rec(CAS, 0x41, "Seat belt reminder chime", Coding, Format::Choice { options: OFF_ON },
+        "Whether the car chimes when the driver's belt is not fastened."),
+    // KOMBI: instrument cluster
+    rec(KOMBI, 0x50, "Digital speed display", Coding, Format::Choice { options: OFF_ON },
+        "Shows the speed as a number in the on-board computer."),
+    rec(KOMBI, 0x51, "Units", Coding, Format::Choice { options: &[(0x00, "Miles, °F"), (0x01, "Kilometres, °C")] },
+        "Units used by the cluster and on-board computer."),
+];
+
+/// Records defined for one module.
+pub fn records_for(address: u8) -> impl Iterator<Item = &'static RecordDef> {
+    RECORDS.iter().filter(move |r| r.module == address)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -241,6 +330,21 @@ mod tests {
             }
         }
         assert_eq!(module_at(0x12), Some(&DME));
+    }
+
+    #[test]
+    fn record_ids_are_unique_per_module() {
+        for (i, a) in RECORDS.iter().enumerate() {
+            assert!(module_at(a.module).is_some(), "{}", a.name);
+            for b in &RECORDS[i + 1..] {
+                assert!(
+                    (a.module, a.lid) != (b.module, b.lid),
+                    "{} and {}",
+                    a.name,
+                    b.name
+                );
+            }
+        }
     }
 
     #[test]

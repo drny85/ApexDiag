@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, AlertTriangle, BatteryMedium, Cable, Cpu, Gauge, History, Power, Wrench, type LucideIcon } from "lucide-react";
+import { Activity, AlertTriangle, BatteryMedium, Cable, Cpu, Gauge, History, ListChecks, Power, Wrench, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDiag } from "@/lib/store";
 import { fmt } from "@/lib/format";
@@ -9,8 +9,9 @@ import Codes from "@/pages/Codes";
 import Modules from "@/pages/Modules";
 import Functions from "@/pages/Functions";
 import ActivityPage from "@/pages/Activity";
+import TimeMachine from "@/pages/TimeMachine";
 
-export type PageId = "connect" | "dashboard" | "codes" | "modules" | "functions" | "activity";
+export type PageId = "connect" | "dashboard" | "codes" | "modules" | "functions" | "timemachine" | "activity";
 
 const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "connect", label: "Connect", icon: Cable },
@@ -18,7 +19,8 @@ const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "codes", label: "Fault Codes", icon: AlertTriangle },
   { id: "modules", label: "Modules", icon: Cpu },
   { id: "functions", label: "Special Functions", icon: Wrench },
-  { id: "activity", label: "Activity", icon: History },
+  { id: "timemachine", label: "Time Machine", icon: History },
+  { id: "activity", label: "Activity", icon: ListChecks },
 ];
 
 export default function App() {
@@ -65,6 +67,7 @@ export default function App() {
             {page === "codes" && <Codes go={setPage} />}
             {page === "modules" && <Modules go={setPage} />}
             {page === "functions" && <Functions />}
+            {page === "timemachine" && <TimeMachine go={setPage} />}
             {page === "activity" && <ActivityPage />}
           </div>
         </main>

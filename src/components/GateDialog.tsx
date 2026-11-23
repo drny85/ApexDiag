@@ -21,6 +21,7 @@ export default function GateDialog({
   onOpenChange,
   run,
   targetLabel,
+  children,
 }: {
   fn: FunctionInfo | undefined;
   open: boolean;
@@ -28,6 +29,8 @@ export default function GateDialog({
   /** Performs the action; returns the steps to show. */
   run: () => Promise<string[]>;
   targetLabel?: string;
+  /** Extra detail shown under the risks, e.g. exactly what will be written. */
+  children?: React.ReactNode;
 }) {
   const { vehicle, connection, refreshVehicle, bump } = useDiag();
   const [acks, setAcks] = useState<boolean[]>([]);
@@ -131,6 +134,7 @@ export default function GateDialog({
               <Section title="How to undo it" icon={<Undo2 className="size-3.5 text-sky-300" />}>
                 {fn.undo}
               </Section>
+              {children}
 
               {fn.requirements.length > 0 && (
                 <div>

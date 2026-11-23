@@ -239,7 +239,7 @@ function ModuleSheet({ module, onClose, onChanged }: { module: ModuleInfo | null
           run={async () => {
             const codes = detail?.faults.map((f) => f.code).join(", ") || "none";
             await api.clearModuleCodes(module.address);
-            return [`Saved ${codes} to the Activity log`, `Sent ClearDiagnosticInformation to ${module.name}`, `${module.name} confirmed`];
+            return [`Backed up ${module.name} (faults ${codes}) to the Time Machine`, `Sent ClearDiagnosticInformation to ${module.name}`, `${module.name} confirmed`];
           }}
         />
       )}

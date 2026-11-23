@@ -11,6 +11,7 @@ pub mod elm327;
 pub mod isotp;
 pub mod obd2;
 pub mod session;
+pub mod snapshot;
 
 /// A CAN identifier (11-bit for D-CAN / J1979 on the E70).
 pub type CanId = u32;
