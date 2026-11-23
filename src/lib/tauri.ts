@@ -476,6 +476,38 @@ export interface ReplaySummary {
   faults: number;
 }
 
+export type Grade = "not_checked" | "good" | "attention" | "problem";
+
+export interface InspectionCode {
+  code: string;
+  description: string | null;
+}
+
+export interface InspectionSection {
+  id: "engine" | "modules" | "readiness" | "cleared" | "battery" | "mileage";
+  title: string;
+  grade: Grade;
+  headline: string;
+  details: string[];
+  why: string;
+}
+
+export interface InspectionView {
+  report: { overall: Grade; summary: string; sections: InspectionSection[] };
+  readings: {
+    km_since_clear: number | null;
+    warmups_since_clear: number | null;
+    battery_v: number | null;
+    engine_running: boolean | null;
+    odometer_km: number | null;
+    modules: { name: string; system: string; present: boolean; faults: InspectionCode[] }[];
+  };
+  vin: string | null;
+  vehicle: string;
+  simulated: boolean;
+  at_ms: number;
+}
+
 export const api = {
   catalog: () => call<Catalog>("catalog"),
   listDevices: () => call<DiscoveredDevice[]>("list_devices"),
@@ -516,4 +548,8 @@ export const api = {
   getReplay: (id: string) => call<Replay>("get_replay", { id }),
   deleteReplay: (id: string) => call<void>("delete_replay", { id }),
   simStumble: () => call<void>("sim_stumble"),
+  inspectionStart: () => call<void>("inspection_start"),
+  inspectionFinish: (modules: { address: number; present: boolean; codes: InspectionCode[] }[]) =>
+    call<InspectionView>("inspection_finish", { modules }),
+  saveDocument: (name: string, contents: string) => call<string>("save_document", { name, contents }),
 };

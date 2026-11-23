@@ -214,3 +214,11 @@ html.ios {
     transform: scale(0.97);
   }
 }
+
+/* Inspection report: grade ring segments draw in one after another. */
+@keyframes ring-in {
+  from {
+    stroke-dasharray: 0 400;
+    opacity: 0;
+  }
+}
