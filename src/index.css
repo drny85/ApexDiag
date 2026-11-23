@@ -139,6 +139,8 @@
   90% { opacity: 1; }
   to { left: 100%; opacity: 0; }
 }
+@keyframes ill-tilt { 0%, 100% { transform: rotate(-6deg); } 50% { transform: rotate(-2deg); } }
+@keyframes ill-grow-y { 0% { transform: scaleY(0.25); } 80%, 100% { transform: scaleY(1); } }
 @keyframes ill-fade-out { 0%, 25% { opacity: 1; } 60%, 100% { opacity: 0.08; } }
 @keyframes ill-needle {
   0%, 20% { transform: rotate(var(--from, 50deg)); }

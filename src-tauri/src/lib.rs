@@ -5,15 +5,18 @@
 //! any safety requirement is not proven. Every attempt, allowed or blocked,
 //! is written to the activity log.
 
+mod repairs;
 mod timemachine;
 
 use protocol_core::catalog::{self, Function, Requirement, RiskTier, VehicleState};
+use protocol_core::copilot::{self, Check, CheckResult, Playbook, RepairRecord, Samples};
 use protocol_core::obd2::{self, Dtc, MilStatus, PidInfo, Readiness, Service};
 use protocol_core::snapshot::{
     self, ModuleDiff, RecordKind, RecordValue, Snapshot, SnapshotFault, SnapshotKind,
 };
 use protocol_core::vehicle::{self, JobStatus, Layout, Module, Pack, System};
 use protocol_core::vin::{self, VinInfo};
+use repairs::RepairStore;
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
@@ -1342,6 +1345,108 @@ async fn read_emissions(state: State<'_, AppState>) -> CmdResult<EmissionsReport
     })
 }
 
+// ---- commands: Repair Copilot ------------------------------------------
+
+/// The guided plan for a fault code.
+#[tauri::command]
+fn copilot_plan(code: String) -> Playbook {
+    copilot::plan_for(code.trim())
+}
+
+/// Samples the check's live values for a few seconds and judges them.
+#[tauri::command]
+async fn copilot_run_check(state: State<'_, AppState>, check: Check) -> CmdResult<CheckResult> {
+    let mut inner = state.0.lock().await;
+    let c = inner.client()?;
+    let mut samples = Samples::new();
+    let until = std::time::Instant::now() + std::time::Duration::from_millis(check.sample_ms());
+    loop {
+        for &pid in check.pids() {
+            if let Ok(v) = c.read_pid(pid).await {
+                samples.entry(pid).or_default().push(v);
+            }
+        }
+        if std::time::Instant::now() >= until {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    }
+    let r = copilot::evaluate(check, &samples);
+    let outcome = format!("{:?}: {}", r.verdict, r.headline);
+    inner.record(
+        "Repair Copilot check",
+        check.title(),
+        RiskTier::Read,
+        true,
+        outcome,
+    );
+    Ok(r)
+}
+
+/// Demo only: pretend the repair was done on the practice car.
+#[tauri::command]
+async fn sim_apply_repair(state: State<'_, AppState>, code: String) -> CmdResult<bool> {
+    let mut inner = state.0.lock().await;
+    let sim = inner.client()?.link_mut().simulator().ok_or_else(|| {
+        CmdError::new(
+            "unavailable",
+            "Only a practice car can be repaired from the app.",
+        )
+    })?;
+    let done = sim.apply_demo_repair(&code);
+    inner.record(
+        "Demo: apply repair",
+        &code,
+        RiskTier::Read,
+        true,
+        if done {
+            "Practice car repaired"
+        } else {
+            "Nothing to repair for this code"
+        },
+    );
+    Ok(done)
+}
+
+#[tauri::command]
+async fn save_repair(
+    state: State<'_, AppState>,
+    repairs: State<'_, RepairStore>,
+    mut record: RepairRecord,
+) -> CmdResult<RepairRecord> {
+    let mut inner = state.0.lock().await;
+    record.vin = inner.vin()?;
+    record.simulated = inner.simulated();
+    if record.id.is_empty() {
+        record.id = format!("r{}", now_ms());
+    }
+    repairs
+        .save(&record)
+        .map_err(|e| CmdError::new("storage", format!("Could not save the repair: {e}")))?;
+    let outcome = if record.verified {
+        "Saved, fix verified"
+    } else {
+        "Saved, not verified yet"
+    };
+    inner.record(
+        "Save repair record",
+        &record.code,
+        RiskTier::Read,
+        true,
+        outcome,
+    );
+    Ok(record)
+}
+
+#[tauri::command]
+async fn list_repairs(
+    state: State<'_, AppState>,
+    repairs: State<'_, RepairStore>,
+) -> CmdResult<Vec<RepairRecord>> {
+    let inner = state.0.lock().await;
+    Ok(repairs.list(&inner.vin()?))
+}
+
 #[tauri::command]
 async fn activity_log(state: State<'_, AppState>) -> CmdResult<Vec<serde_json::Value>> {
     let inner = state.0.lock().await;
@@ -1363,6 +1468,7 @@ pub fn run() {
                 .app_data_dir()
                 .unwrap_or_else(|_| std::env::temp_dir().join("ApexDiag"))
                 .join("snapshots");
+            app.manage(RepairStore::new(dir.with_file_name("repairs")));
             app.manage(SnapshotStore::new(dir));
             Ok(())
         })
@@ -1389,6 +1495,11 @@ pub fn run() {
             compare_snapshots,
             restore_snapshot,
             activity_log,
+            copilot_plan,
+            copilot_run_check,
+            sim_apply_repair,
+            save_repair,
+            list_repairs,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ApexDiag");

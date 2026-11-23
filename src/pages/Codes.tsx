@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, Camera, CheckCircle2, CircleDashed, Clock, Eraser, Leaf, Lock, Plug, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Camera, Sparkles, CheckCircle2, CircleDashed, Clock, Eraser, Leaf, Lock, Plug, RefreshCw, ShieldCheck } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import Empty from "@/components/Empty";
 import GateDialog from "@/components/GateDialog";
@@ -36,7 +36,11 @@ const GROUPS = [
 ];
 
 export default function Codes({ go }: { go: (p: PageId) => void }) {
-  const { connection, catalog, revision } = useDiag();
+  const { connection, catalog, revision, setFocus } = useDiag();
+  const openFix = (code: string) => {
+    setFocus({ code, module: null });
+    go("copilot");
+  };
   const [codes, setCodes] = useState<ObdCodes | null>(null);
   const [emissions, setEmissions] = useState<EmissionsReport | null>(null);
   const [loading, setLoading] = useState(false);
@@ -134,7 +138,7 @@ export default function Codes({ go }: { go: (p: PageId) => void }) {
                     <CheckCircle2 className="size-4 text-emerald-400/70" /> None
                   </div>
                 ) : (
-                  list.map((d) => <CodeRow key={d.code} dtc={d} />)
+                  list.map((d) => <CodeRow key={d.code} dtc={d} onFix={() => openFix(d.code)} />)
                 )}
               </div>
             </div>
@@ -252,7 +256,7 @@ function Emissions({ report, pids }: { report: EmissionsReport; pids: PidInfo[] 
   );
 }
 
-function CodeRow({ dtc }: { dtc: Dtc }) {
+function CodeRow({ dtc, onFix }: { dtc: Dtc; onFix: () => void }) {
   const system = { P: "Powertrain", C: "Chassis", B: "Body", U: "Network" }[dtc.code[0] ?? "P"];
   const generic = dtc.code[1] === "0";
   return (
@@ -263,6 +267,9 @@ function CodeRow({ dtc }: { dtc: Dtc }) {
         <Badge variant="muted">{generic ? "Generic" : "Maker-specific"}</Badge>
       </div>
       <p className="mt-1.5 text-sm text-foreground/85">{dtc.description ?? "No description in the database yet."}</p>
+      <Button variant="ghost" size="sm" className="-ml-2 mt-1 h-7 text-cyan-200" onClick={onFix}>
+        <Sparkles /> Fix this with Repair Copilot
+      </Button>
     </div>
   );
 }

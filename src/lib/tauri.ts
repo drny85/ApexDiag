@@ -290,6 +290,77 @@ export interface LogEntry {
   ok: boolean;
 }
 
+export type CheckId = "fuel_trims" | "intake_vacuum" | "idle_stability" | "catalyst_oxygen_sensors" | "warm_up" | "charging";
+export type Verdict = "pass" | "warn" | "fail" | "unknown";
+
+export interface Fix {
+  action: string;
+  difficulty: "diy" | "experienced" | "shop";
+  cost_usd: [number, number];
+  time: string;
+  parts: string;
+  tools: string;
+}
+
+export interface Cause {
+  name: string;
+  likelihood: "common" | "possible" | "rare";
+  why: string;
+  fix: Fix;
+}
+
+export interface PlanStep {
+  id: string;
+  title: string;
+  detail: string;
+  kind: { kind: "auto"; check: CheckId } | { kind: "manual" };
+  tools: string | null;
+  caution: string | null;
+}
+
+export interface Playbook {
+  id: string;
+  codes: string[];
+  title: string;
+  meaning: string;
+  causes: Cause[];
+  steps: PlanStep[];
+  verify: string;
+  verify_checks: CheckId[];
+}
+
+export interface CheckResult {
+  check: CheckId;
+  verdict: Verdict;
+  headline: string;
+  detail: string;
+  readings: { name: string; value: number; unit: string }[];
+}
+
+export interface StepRecord {
+  step_id: string;
+  title: string;
+  outcome: string;
+  note: string;
+  result: CheckResult | null;
+}
+
+export interface RepairRecord {
+  id: string;
+  vin: string;
+  code: string;
+  module: string | null;
+  title: string;
+  started_ms: number;
+  finished_ms: number;
+  steps: StepRecord[];
+  fix: string;
+  parts: string;
+  verification: CheckResult[];
+  verified: boolean;
+  simulated: boolean;
+}
+
 /** Error shape returned by every Rust command. */
 export interface CmdError {
   kind: string;
@@ -337,4 +408,9 @@ export const api = {
   compareSnapshots: (address: number, from: string, to: string) => call<Comparison>("compare_snapshots", { address, from, to }),
   restoreSnapshot: (address: number, id: string) => call<RestoreReport>("restore_snapshot", { address, id }),
   activityLog: () => call<LogEntry[]>("activity_log"),
+  copilotPlan: (code: string) => call<Playbook>("copilot_plan", { code }),
+  copilotRunCheck: (check: CheckId) => call<CheckResult>("copilot_run_check", { check }),
+  simApplyRepair: (code: string) => call<boolean>("sim_apply_repair", { code }),
+  saveRepair: (record: RepairRecord) => call<RepairRecord>("save_repair", { record }),
+  listRepairs: () => call<RepairRecord[]>("list_repairs"),
 };

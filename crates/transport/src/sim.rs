@@ -164,6 +164,8 @@ pub struct ElmSimulator {
     /// near it; short-term trims cover whatever is not learned.
     leak: (f64, f64),
     trims: Trims,
+    /// The catalytic converter no longer stores oxygen (the Accord's story).
+    cat_worn: bool,
     /// Requests seen, for tests.
     pub log: Vec<String>,
 }
@@ -197,6 +199,7 @@ impl ElmSimulator {
             faults: BTreeMap::new(),
             records: BTreeMap::new(),
             leak: (0.0, 0.0),
+            cat_worn: false,
             trims: Trims {
                 module: 0,
                 bank1: 0,
@@ -315,6 +318,7 @@ impl ElmSimulator {
                     ]),
                 ));
                 self.leak = (1.6, 0.0);
+                self.cat_worn = true;
                 self.trims = Trims {
                     module: PGM_FI.address,
                     bank1: 0x2401,
@@ -373,6 +377,31 @@ impl ElmSimulator {
                     bank2: Some(0x02),
                 };
             }
+        }
+    }
+
+    /// Demo only: pretend the repair for `code` was done, so the Repair
+    /// Copilot's re-test has something to show. Returns false when the demo
+    /// car has nothing to repair for that code.
+    pub fn apply_demo_repair(&mut self, code: &str) -> bool {
+        match code.get(..5) {
+            Some("P0171" | "P0174" | "P0172" | "P0175" | "P0101") if self.leak.0.abs() > 2.0 => {
+                self.leak = (0.4, if self.two_banks() { 0.3 } else { 0.0 });
+                // The engine relearns its trims over the next drive.
+                let t = self.trims;
+                for (id, v) in [(Some(t.bank1), 0.4), (t.bank2, 0.3)] {
+                    if let Some(id) = id {
+                        let raw = ((v * 100.0) as i16).to_be_bytes().to_vec();
+                        self.records.insert((t.module, id), raw);
+                    }
+                }
+                true
+            }
+            Some("P0420" | "P0430") if self.cat_worn => {
+                self.cat_worn = false;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -731,6 +760,11 @@ impl ElmSimulator {
                 },
                 0xFF,
             ],
+            // Downstream sensor: steady behind a working converter, copying
+            // the upstream one behind a worn converter.
+            0x15 if self.cat_worn && run => {
+                vec![(100.0 + 70.0 * (t * 4.0 + 0.6).sin()) as u8, 0xFF]
+            }
             0x15 => vec![if run { 140 } else { 0 }, 0xFF],
             0x1F => word(if run { t } else { 0.0 }),
             0x21 => word(0.0),
@@ -1017,5 +1051,18 @@ mod tests {
                 assert!(car.pack.module(*addr).is_some());
             }
         }
+    }
+
+    #[test]
+    fn demo_repairs_change_what_the_checks_see() {
+        let mut sim = ElmSimulator::with_car(sim_car("honda_accord").unwrap(), SimEngine::Idling);
+        assert!(sim.cat_worn);
+        assert!(!sim.apply_demo_repair("P0171"));
+        assert!(sim.apply_demo_repair("P0420-00"));
+        assert!(!sim.cat_worn);
+        let mut sim = ElmSimulator::new(SimEngine::Idling);
+        assert!(sim.ltft(1) > 9.0);
+        assert!(sim.apply_demo_repair("P0171"));
+        assert!(sim.ltft(1) < 1.0 && sim.leak.0 < 1.0);
     }
 }

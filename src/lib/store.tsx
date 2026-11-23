@@ -24,6 +24,9 @@ interface DiagContextValue {
   /** Bumped whenever something may have changed the car (clear, run). */
   revision: number;
   bump: () => void;
+  /** A fault picked elsewhere to open in the Repair Copilot. */
+  focus: { code: string; module: string | null } | null;
+  setFocus: (f: { code: string; module: string | null } | null) => void;
 }
 
 const DiagContext = createContext<DiagContextValue | null>(null);
@@ -34,6 +37,7 @@ export function DiagProvider({ children }: { children: ReactNode }) {
   const [live, setLive] = useState<Map<number, number>>(new Map());
   const [vehicle, setVehicle] = useState<StateReport | null>(null);
   const [revision, setRevision] = useState(0);
+  const [focus, setFocus] = useState<{ code: string; module: string | null } | null>(null);
   const history = useRef<Map<number, Sample[]>>(new Map());
 
   useEffect(() => {
@@ -107,8 +111,10 @@ export function DiagProvider({ children }: { children: ReactNode }) {
       refreshVehicle,
       revision,
       bump: () => setRevision((r) => r + 1),
+      focus,
+      setFocus,
     }),
-    [catalog, connection, live, vehicle, refreshVehicle, revision],
+    [catalog, connection, live, vehicle, refreshVehicle, revision, focus],
   );
 
   return <DiagContext.Provider value={value}>{children}</DiagContext.Provider>;

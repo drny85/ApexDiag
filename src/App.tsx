@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, AlertTriangle, BatteryMedium, Cable, Cpu, Gauge, History, ListChecks, Power, Radar, Wrench, type LucideIcon } from "lucide-react";
+import { Activity, AlertTriangle, BatteryMedium, Cable, Cpu, Gauge, History, ListChecks, Power, Radar, Sparkles, Wrench, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDiag } from "@/lib/store";
 import { fmt } from "@/lib/format";
@@ -11,8 +11,9 @@ import Functions from "@/pages/Functions";
 import ActivityPage from "@/pages/Activity";
 import TimeMachine from "@/pages/TimeMachine";
 import QuickTest from "@/pages/QuickTest";
+import Copilot from "@/pages/Copilot";
 
-export type PageId = "connect" | "quicktest" | "dashboard" | "codes" | "modules" | "functions" | "timemachine" | "activity";
+export type PageId = "connect" | "quicktest" | "copilot" | "dashboard" | "codes" | "modules" | "functions" | "timemachine" | "activity";
 
 const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "connect", label: "Connect", icon: Cable },
@@ -20,6 +21,7 @@ const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "dashboard", label: "Live Data", icon: Activity },
   { id: "codes", label: "Fault Codes", icon: AlertTriangle },
   { id: "modules", label: "Modules", icon: Cpu },
+  { id: "copilot", label: "Repair Copilot", icon: Sparkles },
   { id: "functions", label: "Special Functions", icon: Wrench },
   { id: "timemachine", label: "Time Machine", icon: History },
   { id: "activity", label: "Activity", icon: ListChecks },
@@ -66,6 +68,7 @@ export default function App() {
           <div className="mx-auto max-w-[1400px]" key={page + (connection ? "c" : "")}>
             {page === "connect" && <Connect go={setPage} />}
             {page === "quicktest" && <QuickTest go={setPage} />}
+            {page === "copilot" && <Copilot go={setPage} />}
             {page === "dashboard" && <Dashboard go={setPage} />}
             {page === "codes" && <Codes go={setPage} />}
             {page === "modules" && <Modules go={setPage} />}
