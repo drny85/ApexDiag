@@ -11,6 +11,7 @@ use std::time::Duration;
 #[cfg(feature = "ble")]
 pub mod ble;
 pub mod capture;
+pub mod channel;
 pub mod elm;
 pub mod mock;
 pub mod sim;
