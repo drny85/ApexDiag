@@ -18,7 +18,7 @@ export const MAKE_ACCENT: Record<Make, string> = {
   generic: "#67e8f9",
 };
 
-type Shape = {
+export type Shape = {
   outline: string;
   glass: string;
   wheels: [number, number];
@@ -31,7 +31,7 @@ type Shape = {
 };
 
 /** Outline, glass and wheels tuned per body style (viewBox 296 x 112). */
-const SHAPES: Record<Body, Shape> = {
+export const SHAPES: Record<Body, Shape> = {
   suv: {
     outline:
       "M14 92 C 10 92, 8 90, 8 86 L 8 50 C 8 40, 11 31, 18 25 L 32 18 L 174 16 C 182 16, 188 19, 194 25 L 220 49 L 268 54 C 282 56, 288 62, 288 72 L 288 88 C 288 91, 286 92, 283 92 Z",

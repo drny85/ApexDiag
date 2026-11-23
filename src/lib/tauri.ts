@@ -587,6 +587,7 @@ export const api = {
   getReplay: (id: string) => call<Replay>("get_replay", { id }),
   deleteReplay: (id: string) => call<void>("delete_replay", { id }),
   simStumble: () => call<void>("sim_stumble"),
+  simDrive: (on: boolean) => call<void>("sim_drive", { on }),
   inspectionStart: () => call<void>("inspection_start"),
   inspectionFinish: (modules: { address: number; present: boolean; codes: InspectionCode[] }[], lang: "en" | "es" = "en") =>
     call<InspectionView>("inspection_finish", { modules, lang }),

@@ -2,7 +2,17 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import { api, asCmdError, type Catalog, type ConnectReport, type MarkInfo, type Replay, type StateReport } from "./tauri";
 
 /** PIDs streamed while connected, in priority order. */
-export const LIVE_PIDS = [0x0c, 0x0d, 0x05, 0x42, 0x06, 0x07, 0x08, 0x09, 0x0b, 0x10, 0x0e, 0x04, 0x14, 0x5c, 0x0f, 0x2f];
+export const LIVE_PIDS = [0x0c, 0x0d, 0x05, 0x42, 0x06, 0x07, 0x08, 0x09, 0x0b, 0x10, 0x0e, 0x04, 0x14, 0x5c, 0x0f, 0x2f, 0x11];
+
+/** Drive Mode reads these every time (one request on most cars)... */
+export const DRIVE_FAST = [0x0d, 0x0c, 0x11, 0x10];
+/** ...plus one of these pairs in turn: temperatures and fuel change slowly. */
+export const DRIVE_SLOW = [
+  [0x05, 0x5c],
+  [0x2f, 0x42],
+  [0x0f, 0x0b],
+  [0x04, 0x46],
+];
 
 const HISTORY_SECONDS = 30;
 
@@ -42,6 +52,9 @@ interface DiagContextValue {
   /** Holds live-data and state polling while a scan has the adapter, so
    * the scan isn't slowed down by requests in between its own. */
   pauseLive: (on: boolean) => void;
+  /** Drive Mode: poll speed and rpm first, everything else in turn. */
+  driveMode: boolean;
+  setDriveMode: (on: boolean) => void;
 }
 
 const DiagContext = createContext<DiagContextValue | null>(null);
@@ -63,6 +76,12 @@ export function DiagProvider({ children }: { children: ReactNode }) {
   const paused = useRef(false);
   const pauseLive = useCallback((on: boolean) => {
     paused.current = on;
+  }, []);
+  const [driveMode, setDriveModeState] = useState(false);
+  const drive = useRef(false);
+  const setDriveMode = useCallback((on: boolean) => {
+    drive.current = on;
+    setDriveModeState(on);
   }, []);
 
   const finishReplay = useCallback(async () => {
@@ -115,7 +134,12 @@ export function DiagProvider({ children }: { children: ReactNode }) {
     }
     const supported = new Set(connection.supported_pids);
     const pids = LIVE_PIDS.filter((p) => supported.size === 0 || supported.has(p));
+    const has = (p: number) => supported.size === 0 || supported.has(p);
+    const fast = DRIVE_FAST.filter(has);
+    const slow = DRIVE_SLOW.map((g) => g.filter(has)).filter((g) => g.length);
+    let turn = 0;
     let stop = false;
+    let last = new Map<number, number>();
     (async () => {
       while (!stop) {
         if (paused.current) {
@@ -124,9 +148,12 @@ export function DiagProvider({ children }: { children: ReactNode }) {
         }
         const started = performance.now();
         try {
-          const values = await api.readLive(pids);
+          const driving = drive.current;
+          const ask = driving ? [...fast, ...(slow[turn++ % Math.max(1, slow.length)] ?? [])] : pids;
+          const values = await api.readLive(ask);
           const now = performance.now();
-          const next = new Map<number, number>();
+          // In Drive Mode only some values are read each time: keep the rest.
+          const next = driving ? new Map(last) : new Map<number, number>();
           for (const { pid, value } of values) {
             next.set(pid, value);
             const h = history.current.get(pid) ?? [];
@@ -134,6 +161,7 @@ export function DiagProvider({ children }: { children: ReactNode }) {
             while (h.length && h[0]!.t < now - HISTORY_SECONDS * 1000) h.shift();
             history.current.set(pid, h);
           }
+          last = next;
           if (!stop) setLive(next);
         } catch {
           /* adapter hiccup: try again next tick */
@@ -148,7 +176,8 @@ export function DiagProvider({ children }: { children: ReactNode }) {
   }, [connection]);
 
   const refreshVehicle = useCallback(async () => {
-    if (paused.current) return;
+    // Drive Mode leaves the adapter to live data.
+    if (paused.current || drive.current) return;
     try {
       setVehicle(await api.vehicleState());
     } catch {
@@ -189,8 +218,10 @@ export function DiagProvider({ children }: { children: ReactNode }) {
       openReplay,
       setOpenReplay,
       pauseLive,
+      driveMode,
+      setDriveMode,
     }),
-    [catalog, connection, live, vehicle, refreshVehicle, revision, focus, recording, savingReplay, lastReplay, replayError, markMoment, finishReplay, openReplay, pauseLive],
+    [catalog, connection, live, vehicle, refreshVehicle, revision, focus, recording, savingReplay, lastReplay, replayError, markMoment, finishReplay, openReplay, pauseLive, driveMode, setDriveMode],
   );
 
   return <DiagContext.Provider value={value}>{children}</DiagContext.Provider>;
