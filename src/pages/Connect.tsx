@@ -7,6 +7,7 @@ import { useDiag } from "@/lib/store";
 import { api, asCmdError, type DiscoveredDevice } from "@/lib/tauri";
 import { fmt } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import { HandshakeFlow, ObdPortScene } from "@/components/illustrations/Connect";
 import type { PageId } from "@/App";
 
 export default function Connect({ go }: { go: (p: PageId) => void }) {
@@ -15,6 +16,7 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [lines, setLines] = useState<string[]>([]);
+  const [step, setStep] = useState(0);
   const consoleRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -29,17 +31,23 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
     setBusy(d.id);
     setError(null);
     setLines([`Opening ${d.name}…`]);
+    setStep(0);
     try {
       const report = await api.connect(d.id);
-      // Replay the adapter handshake so the user sees what happened.
+      // Replay the adapter handshake so the user sees what happened, lighting
+      // up the diagram as each stage is reached.
       for (const l of report.transcript.slice(0, 24)) {
         setLines((x) => [...x, `→ ${l}`]);
-        await new Promise((r) => setTimeout(r, 45));
+        if (/^AT\s*Z|^ATI/.test(l)) setStep((s) => Math.max(s, 1));
+        if (/^AT\s*SP/.test(l)) setStep((s) => Math.max(s, 2));
+        await new Promise((r) => setTimeout(r, 70));
       }
+      setStep(3);
       setLines((x) => [...x, `✓ ${report.adapter.version} ready · VIN ${report.vin ?? "unknown"}`]);
       setConnection(report);
     } catch (e) {
       const err = asCmdError(e);
+      setStep(0);
       setError(err.message);
       setLines((x) => [...x, `✗ ${err.message}`]);
     } finally {
@@ -51,6 +59,7 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
     await api.disconnect().catch(() => {});
     setConnection(null);
     setLines([]);
+    setStep(0);
   };
 
   return (
@@ -94,8 +103,13 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
         </div>
       )}
 
+      {!connection && !busy && lines.length === 0 && <PlugInGuide />}
+
       {(lines.length > 0 || error) && (
         <div className="mt-6 overflow-hidden rounded-2xl border border-white/[0.07] bg-black/30">
+          <div className="border-b border-white/[0.06] px-6 pb-2 pt-4">
+            <HandshakeFlow step={connection ? 3 : step} className="mx-auto h-24 w-full max-w-xl" />
+          </div>
           <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-2 text-xs text-muted-foreground">
             <span className="size-2 rounded-full bg-cyan-400/80" /> Adapter conversation
           </div>
@@ -110,6 +124,37 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
       )}
       {error && !lines.length && <p className="mt-4 text-sm text-rose-300">{error}</p>}
     </div>
+  );
+}
+
+function PlugInGuide() {
+  const steps = [
+    ["Ignition on", "Press Start once without your foot on the brake. The engine doesn't need to run."],
+    ["Plug in the adapter", "Driver footwell, under the dashboard to the left of the steering column, near the hood release."],
+    ["Wait for its light", "The adapter's LED comes on when it has power from the car."],
+    ["Pick it above", "ApexDiag finds it over Bluetooth and does the rest."],
+  ];
+  return (
+    <section className="mt-6 grid items-center gap-6 overflow-hidden rounded-2xl border border-white/[0.07] bg-gradient-to-br from-white/[0.03] to-transparent p-6 lg:grid-cols-[1.1fr_1fr]">
+      <ObdPortScene className="w-full max-w-lg" />
+      <div>
+        <h3 className="text-sm font-semibold">Plugging in on the X5</h3>
+        <ol className="mt-3 space-y-3">
+          {steps.map(([t, d], i) => (
+            <li key={t} className="flex gap-3">
+              <span className="grid size-6 shrink-0 place-items-center rounded-full bg-cyan-400/10 text-xs font-semibold text-cyan-200 ring-1 ring-cyan-400/25">
+                {i + 1}
+              </span>
+              <div>
+                <div className="text-sm font-medium">{t}</div>
+                <p className="text-xs leading-relaxed text-muted-foreground">{d}</p>
+              </div>
+            </li>
+          ))}
+        </ol>
+        <p className="mt-4 text-[11px] text-muted-foreground">The drawing shows the general area, not your exact trim.</p>
+      </div>
+    </section>
   );
 }
 
@@ -163,6 +208,15 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
           <Button variant="secondary" size="sm" className="mt-4" onClick={() => go("codes")}>
             Review fault codes <ArrowRight />
           </Button>
+        </div>
+        <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 pb-2 pt-3">
+          <div className="flex items-center justify-between text-xs text-muted-foreground">
+            <span>Link</span>
+            <span className="flex items-center gap-1.5">
+              <span className="size-1.5 animate-pulse rounded-full bg-cyan-300" /> keep-alive every 2 s
+            </span>
+          </div>
+          <HandshakeFlow step={3} className="mx-auto mt-1 h-20 w-full" />
         </div>
         <div className="grid grid-cols-2 gap-3">
           <QuickAction icon={GaugeIcon} label="Live dashboard" onClick={() => go("dashboard")} />
