@@ -23,7 +23,8 @@ pub struct VinInfo {
     pub region: &'static str,
     pub country: Option<&'static str>,
     pub make: Make,
-    /// Brand as built (Lexus and Acura map to the Toyota and Honda packs).
+    /// Brand as built (Lexus and Acura map to the Toyota and Honda packs;
+    /// a 1C4 VIN may be a Jeep, Dodge or Chrysler).
     pub manufacturer: Option<&'static str>,
     pub model_year: Option<u16>,
     /// Character 11: the assembly plant code.
@@ -84,6 +85,11 @@ const WMI: &[(&str, Make, &str)] = &[
     ("19X", Make::Honda, "Honda (USA)"),
     ("SHH", Make::Honda, "Honda (UK)"),
     ("SHS", Make::Honda, "Honda (UK)"),
+    ("1J4", Make::Jeep, "Jeep"),
+    ("1J8", Make::Jeep, "Jeep"),
+    // 1C4 is shared by Jeep, Dodge and Chrysler SUVs and vans. The Jeep
+    // pack is a demo layout, so a real car only gets the legislated scan.
+    ("1C4", Make::Jeep, "Jeep, Dodge or Chrysler (USA)"),
 ];
 
 fn region(c: char) -> (&'static str, Option<&'static str>) {
@@ -241,6 +247,10 @@ mod tests {
             decode("19UUB1F50JA000001", 2026).manufacturer,
             Some("Acura")
         );
+        let v = decode("1C4HJXDG0KW000001", 2026);
+        assert_eq!(v.make, Make::Jeep);
+        assert_eq!(v.model_year, Some(2019));
+        assert_eq!(decode("1J4FA49S0YP000001", 2026).make, Make::Jeep);
         assert_eq!(decode("WDDZF4JB0KA000001", 2026).region, "Europe");
         assert_eq!(decode("WDDZF4JB0KA000001", 2026).country, Some("Germany"));
     }

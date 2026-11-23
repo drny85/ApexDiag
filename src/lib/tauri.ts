@@ -69,7 +69,7 @@ export interface ModuleInfo {
   spot: { x: number; y: number; area: string };
 }
 
-export type Make = "bmw" | "mercedes_benz" | "toyota" | "honda" | "generic";
+export type Make = "bmw" | "mercedes_benz" | "toyota" | "honda" | "jeep" | "generic";
 
 export interface Pack {
   id: string;
@@ -78,7 +78,7 @@ export interface Pack {
   model: string;
   chassis: string;
   years: string;
-  body: "suv" | "sedan";
+  body: "suv" | "sedan" | "offroad";
   layout: "documented" | "demo";
   dealer_tool: string;
   modules: ModuleInfo[];

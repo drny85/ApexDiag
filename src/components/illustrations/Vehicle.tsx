@@ -14,7 +14,62 @@ export const MAKE_ACCENT: Record<Make, string> = {
   mercedes_benz: "#d6dbe4",
   toyota: "#ff7a7a",
   honda: "#ff9b62",
+  jeep: "#9bd17a",
   generic: "#67e8f9",
+};
+
+type Shape = {
+  outline: string;
+  glass: string;
+  wheels: [number, number];
+  r: number;
+  cy: number;
+  belt: string;
+  doors: string;
+  head: string;
+  tail: string;
+};
+
+/** Outline, glass and wheels tuned per body style (viewBox 296 x 112). */
+const SHAPES: Record<Body, Shape> = {
+  suv: {
+    outline:
+      "M14 92 C 10 92, 8 90, 8 86 L 8 50 C 8 40, 11 31, 18 25 L 32 18 L 174 16 C 182 16, 188 19, 194 25 L 220 49 L 268 54 C 282 56, 288 62, 288 72 L 288 88 C 288 91, 286 92, 283 92 Z",
+    glass:
+      "M20 46 L 21 33 C 23 27, 27 24, 35 23 L 84 22 L 84 46 Z M90 22 L 136 21 L 136 46 L 90 46 Z M142 21 L 172 21 C 178 21, 182 23, 186 28 L 205 46 L 142 46 Z",
+    wheels: [62, 238],
+    r: 18,
+    cy: 94,
+    belt: "M12 54 L 272 58",
+    doors: "M87 24 L 87 84 M139 22 L 139 84",
+    head: "M274 62 l 12 2",
+    tail: "M9 48 l 0 10",
+  },
+  sedan: {
+    outline:
+      "M10 80 C 10 70, 16 64, 28 62 L 70 56 L 104 32 C 110 28, 118 26, 128 26 L 186 26 C 196 26, 204 30, 212 38 L 232 56 L 268 62 C 280 64, 288 70, 288 80 L 288 88 C 288 92, 285 94, 281 94 L 14 94 C 10 94, 8 92, 8 88 Z",
+    glass: "M80 57 L 108 36 C 112 33, 118 32, 126 32 L 154 32 L 154 57 Z M160 32 L 184 32 C 192 32, 198 35, 203 40 L 220 57 L 160 57 Z",
+    wheels: [64, 236],
+    r: 15,
+    cy: 94,
+    belt: "M28 66 L 272 66",
+    doors: "M157 58 L 157 90",
+    head: "M274 68 l 12 2",
+    tail: "M12 70 l 8 -1",
+  },
+  // Boxy body-on-frame off-roader: upright glass, flat hood, high clearance.
+  offroad: {
+    outline:
+      "M28 80 L 24 76 L 24 22 C 24 18, 26 16, 30 16 L 170 16 C 173 16, 175 17, 176 19 L 189 44 L 276 46 C 281 46, 284 49, 284 53 L 284 76 L 280 80 Z",
+    glass: "M32 22 H 64 V 44 H 32 Z M72 22 H 116 V 44 H 72 Z M124 22 H 168 L 179 44 H 124 Z",
+    wheels: [74, 236],
+    r: 19,
+    cy: 91,
+    belt: "M26 50 L 186 50",
+    doors: "M68 20 L 68 78 M120 20 L 120 78",
+    head: "M277 56 l 7 0",
+    tail: "M25 50 l 0 10",
+  },
 };
 
 /** Side profile, facing right. `scanning` sweeps a light across it. */
@@ -29,16 +84,9 @@ export function CarSide({
   scanning?: boolean;
   className?: string;
 }) {
-  const suv = body === "suv";
-  // Outline, glass and wheel arches tuned per body style.
-  const outline = suv
-    ? "M14 92 C 10 92, 8 90, 8 86 L 8 50 C 8 40, 11 31, 18 25 L 32 18 L 174 16 C 182 16, 188 19, 194 25 L 220 49 L 268 54 C 282 56, 288 62, 288 72 L 288 88 C 288 91, 286 92, 283 92 Z"
-    : "M10 80 C 10 70, 16 64, 28 62 L 70 56 L 104 32 C 110 28, 118 26, 128 26 L 186 26 C 196 26, 204 30, 212 38 L 232 56 L 268 62 C 280 64, 288 70, 288 80 L 288 88 C 288 92, 285 94, 281 94 L 14 94 C 10 94, 8 92, 8 88 Z";
-  const glass = suv
-    ? "M20 46 L 21 33 C 23 27, 27 24, 35 23 L 84 22 L 84 46 Z M90 22 L 136 21 L 136 46 L 90 46 Z M142 21 L 172 21 C 178 21, 182 23, 186 28 L 205 46 L 142 46 Z"
-    : "M80 57 L 108 36 C 112 33, 118 32, 126 32 L 154 32 L 154 57 Z M160 32 L 184 32 C 192 32, 198 35, 203 40 L 220 57 L 160 57 Z";
-  const wheels = suv ? [62, 238] : [64, 236];
-  const r = suv ? 18 : 15;
+  const shape = SHAPES[body] ?? SHAPES.suv;
+  const { outline, glass, wheels, r, cy } = shape;
+  const offroad = body === "offroad";
   return (
     <svg viewBox="0 0 296 112" className={cn("ill", className)} fill="none" strokeLinecap="round" strokeLinejoin="round">
       <defs>
@@ -51,19 +99,33 @@ export function CarSide({
         </clipPath>
       </defs>
       <ellipse cx="148" cy="104" rx="132" ry="4" fill="#000" opacity="0.35" />
+      {offroad && (
+        // Spare wheel on the tailgate: seen side-on, just its tread.
+        <rect x="13" y="28" width="12" height="40" rx="5" fill="#0b0f14" stroke="rgba(255,255,255,0.3)" strokeWidth="2" />
+      )}
       <path d={outline} fill={`url(#side-${body})`} stroke={accent} strokeOpacity="0.7" strokeWidth="1.5" />
       <path d={glass} fill="rgba(255,255,255,0.05)" stroke="rgba(255,255,255,0.25)" />
       {/* belt line and door cut */}
-      <path d={suv ? "M12 54 L 272 58" : "M28 66 L 272 66"} stroke="rgba(255,255,255,0.12)" />
-      <path d={suv ? "M87 24 L 87 84 M139 22 L 139 84" : "M157 58 L 157 90"} stroke="rgba(255,255,255,0.1)" />
+      <path d={shape.belt} stroke="rgba(255,255,255,0.12)" />
+      <path d={shape.doors} stroke="rgba(255,255,255,0.1)" />
+      {offroad && (
+        <>
+          {/* steel bumpers */}
+          <rect x="274" y="72" width="17" height="8" rx="1.5" fill="#0b0f14" stroke="rgba(255,255,255,0.3)" />
+          <rect x="17" y="72" width="13" height="8" rx="1.5" fill="#0b0f14" stroke="rgba(255,255,255,0.3)" />
+          {/* hood line */}
+          <path d="M190 46 L 274 48" stroke="rgba(255,255,255,0.12)" />
+        </>
+      )}
       {/* lights */}
-      <path d={suv ? "M274 62 l 12 2" : "M274 68 l 12 2"} stroke={accent} strokeWidth="3" />
-      <path d={suv ? "M9 48 l 0 10" : "M12 70 l 8 -1"} stroke="#fb7185" strokeWidth="3" />
+      <path d={shape.head} stroke={accent} strokeWidth="3" />
+      <path d={shape.tail} stroke="#fb7185" strokeWidth="3" />
       {wheels.map((x) => (
         <g key={x}>
-          <circle cx={x} cy={94} r={r + 4} fill="#0b0f14" />
-          <circle cx={x} cy={94} r={r} fill="#111821" stroke="rgba(255,255,255,0.35)" strokeWidth="2" />
-          <circle cx={x} cy={94} r={r * 0.45} stroke="rgba(255,255,255,0.2)" />
+          <circle cx={x} cy={cy} r={r + 4} fill="#0b0f14" />
+          <circle cx={x} cy={cy} r={r} fill="#111821" stroke="rgba(255,255,255,0.35)" strokeWidth={offroad ? 3.5 : 2} />
+          <circle cx={x} cy={cy} r={r * 0.45} stroke="rgba(255,255,255,0.2)" />
+          {offroad && <path d={`M${x - r - 6} ${cy - 8} A ${r + 7} ${r + 7} 0 0 1 ${x + r + 6} ${cy - 8}`} stroke={accent} strokeOpacity="0.55" strokeWidth="3" />}
         </g>
       ))}
       {scanning && (
@@ -77,7 +139,7 @@ export function CarSide({
 
 /** Top-down body (viewBox 240 x 470, front at the top, driver on the left). */
 export function TopDownBody({ body }: { body: Body }) {
-  const suv = body === "suv";
+  const suv = body !== "sedan";
   const outline = suv
     ? "M64 22 C 90 10, 150 10, 176 22 C 200 32, 212 60, 212 96 L 214 380 C 214 420, 200 452, 170 458 C 140 462, 100 462, 70 458 C 40 452, 26 420, 26 380 L 28 96 C 28 60, 40 32, 64 22 Z"
     : "M70 20 C 94 10, 146 10, 170 20 C 194 30, 206 58, 206 100 L 208 392 C 208 428, 196 452, 168 458 C 140 462, 100 462, 72 458 C 44 452, 32 428, 32 392 L 34 100 C 34 58, 46 30, 70 20 Z";
