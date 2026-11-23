@@ -40,7 +40,8 @@ import Empty from "@/components/Empty";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import CarMap, { type MapStatus } from "@/components/illustrations/CarMap";
-import { BrandChip, CarSide, MAKE_ACCENT } from "@/components/illustrations/Vehicle";
+import { BrandChip, MAKE_ACCENT } from "@/components/illustrations/Vehicle";
+import { Car3D, CarStill } from "@/components/car3d";
 import { AreaArt, HealthRing, STATUS_COLOR, ScanStages } from "@/components/illustrations/ScanArt";
 import { useDiag } from "@/lib/store";
 import { useI18n, Tr, type T } from "@/lib/i18n";
@@ -270,7 +271,7 @@ function ScanHero({
             {pack.brand} {pack.model}
           </div>
           <div className="mt-1 font-mono text-xs tracking-wider text-muted-foreground">VIN {vin ?? t("VIN not read")}</div>
-          <CarSide body={pack.body} accent={accent} scanning={running} className="mt-4 w-full" />
+          <Car3D pack={pack} view="front34" scanning={running} className="mt-2 aspect-[16/9] w-full" />
         </div>
 
         <div>
@@ -390,8 +391,8 @@ function Results({
           tone === "emerald" && "border-emerald-400/20 bg-gradient-to-br from-emerald-400/[0.08] to-transparent",
         )}
       >
-        <div className="pointer-events-none absolute -bottom-6 -right-6 hidden opacity-25 2xl:block">
-          <CarSide body={pack.body} accent={STATUS_COLOR[r.overall]} className="w-[340px]" />
+        <div className="pointer-events-none absolute -bottom-4 right-0 hidden opacity-60 2xl:block">
+          <CarStill pack={pack} view="rear34" width={380} height={190} className="w-[380px]" />
         </div>
         <div className="relative flex flex-col items-start gap-6 md:flex-row md:items-center">
           <HealthRing counts={counts} size={176}>

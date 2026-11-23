@@ -3,7 +3,7 @@
  * the launch timer. Everything the car sends is metric (km/h, °C); it is
  * converted only for display.
  */
-import type { Level } from "@/components/Car3D";
+import type { Level } from "@/components/DriveScene";
 
 export type UnitSystem = "metric" | "imperial";
 export type NightSetting = "auto" | "on" | "off";
