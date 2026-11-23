@@ -183,6 +183,8 @@ pub struct ElmSimulator {
     cat_worn: bool,
     /// The alternator undercharges with the engine running (the Jeep's story).
     low_charge: bool,
+    /// Demo only: when a one-off stumble started (seconds since start).
+    stumble_at: Option<f64>,
     /// Requests seen, for tests.
     pub log: Vec<String>,
 }
@@ -218,6 +220,7 @@ impl ElmSimulator {
             leak: (0.0, 0.0),
             cat_worn: false,
             low_charge: false,
+            stumble_at: None,
             trims: Trims {
                 module: 0,
                 bank1: 0,
@@ -516,6 +519,28 @@ impl ElmSimulator {
         self.engine = engine;
     }
 
+    /// Demo only: makes the idling engine stumble once, for about a second,
+    /// like an intermittent misfire. Instant Replay is demonstrated on it.
+    pub fn stumble(&mut self) {
+        self.stumble_at = Some(self.t());
+    }
+
+    /// How deep into the stumble the engine is right now, 0.0 to 1.0.
+    fn stumble_depth(&self) -> f64 {
+        const LENGTH: f64 = 1.2;
+        match self.stumble_at {
+            Some(at) if self.running() => {
+                let x = (self.t() - at) / LENGTH;
+                if (0.0..1.0).contains(&x) {
+                    (x * std::f64::consts::PI).sin()
+                } else {
+                    0.0
+                }
+            }
+            _ => 0.0,
+        }
+    }
+
     pub fn engine(&self) -> SimEngine {
         self.engine
     }
@@ -749,8 +774,9 @@ impl ElmSimulator {
         let run = self.running();
         let warm = (t / 120.0).min(1.0);
         let coolant = 40.0 + 65.0 * warm + (t * 0.3).sin();
+        let dip = self.stumble_depth();
         let rpm = if run {
-            700.0 + 25.0 * (t * 1.7).sin() + 10.0 * (t * 5.3).sin()
+            700.0 + 25.0 * (t * 1.7).sin() + 10.0 * (t * 5.3).sin() - 190.0 * dip
         } else {
             0.0
         };
@@ -765,7 +791,7 @@ impl ElmSimulator {
             byte(
                 128.0
                     + if run {
-                        3.0 * wave + (leak - self.ltft(bank)) * 0.8
+                        3.0 * wave + (leak - self.ltft(bank)) * 0.8 + 12.0 * dip
                     } else {
                         0.0
                     } * 1.28,
@@ -788,7 +814,7 @@ impl ElmSimulator {
             0x40 => vec![0xFE, 0xD0, 0x00, 0x10],
             0x04 => byte(
                 if run {
-                    22.0 + 2.0 * (t * 1.3).sin()
+                    22.0 + 2.0 * (t * 1.3).sin() + 12.0 * dip
                 } else {
                     0.0
                 } * 255.0
@@ -800,7 +826,7 @@ impl ElmSimulator {
             0x08 if self.two_banks() => stft((t * 1.9).cos(), self.leak.1, 2),
             0x09 if self.two_banks() => byte(128.0 + self.ltft(2) * 1.28),
             0x0B => byte(if run {
-                34.0 + 1.5 * (t * 1.1).sin()
+                34.0 + 1.5 * (t * 1.1).sin() + 9.0 * dip
             } else {
                 101.0
             }),
@@ -808,7 +834,7 @@ impl ElmSimulator {
             0x0D => vec![0],
             0x0E => byte(
                 (if run {
-                    9.0 + 2.0 * (t * 0.8).sin()
+                    9.0 + 2.0 * (t * 0.8).sin() - 5.0 * dip
                 } else {
                     0.0
                 } + 64.0)
@@ -823,6 +849,8 @@ impl ElmSimulator {
                 } * 100.0,
             ),
             0x11 => byte(if run { 82.0 } else { 0.0 } * 255.0 / 100.0),
+            // A misfire sends unburnt oxygen past the sensor: it reads lean.
+            0x14 if dip > 0.3 => vec![14, 0xFF],
             0x14 => vec![
                 if run {
                     (90.0 + 80.0 * (t * 4.0).sin()) as u8
@@ -1155,5 +1183,23 @@ mod tests {
                 .unwrap()
                 .starts_with("Demo:"));
         }
+    }
+
+    #[test]
+    fn demo_stumble_dips_rpm_once() {
+        let mut sim = ElmSimulator::new(SimEngine::Idling);
+        let rpm = |sim: &ElmSimulator| {
+            let b = sim.pid(0x0C).unwrap();
+            u16::from_be_bytes([b[0], b[1]]) as f64 / 4.0
+        };
+        assert_eq!(sim.stumble_depth(), 0.0);
+        // Start the stumble 0.6 s ago: the middle of the dip.
+        sim.stumble_at = Some(sim.t() - 0.6);
+        assert!(sim.stumble_depth() > 0.9);
+        assert!(rpm(&sim) < 560.0);
+        assert_eq!(sim.pid(0x14).unwrap()[0], 14);
+        sim.stumble_at = Some(sim.t() - 5.0);
+        assert_eq!(sim.stumble_depth(), 0.0);
+        assert!(rpm(&sim) > 640.0);
     }
 }

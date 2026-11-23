@@ -7,17 +7,20 @@
 
 mod car_test;
 mod repairs;
+mod replays;
 mod timemachine;
 
 use protocol_core::catalog::{self, Function, Requirement, RiskTier, VehicleState};
 use protocol_core::copilot::{self, Check, CheckResult, Playbook, RepairRecord, Samples};
 use protocol_core::obd2::{self, Dtc, MilStatus, PidInfo, Readiness, Service};
+use protocol_core::replay;
 use protocol_core::snapshot::{
     self, ModuleDiff, RecordKind, RecordValue, Snapshot, SnapshotFault, SnapshotKind,
 };
 use protocol_core::vehicle::{self, JobStatus, Layout, Module, Pack, System};
 use protocol_core::vin::{self, VinInfo};
 use repairs::RepairStore;
+use replays::{Replay, ReplayCode, ReplayModule, ReplayStore, ReplaySummary};
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
@@ -41,6 +44,10 @@ struct Inner {
     log: Vec<LogEntry>,
     /// The raw capture file for this connection.
     capture: Option<std::path::PathBuf>,
+    /// The last minute of live data, for Instant Replay.
+    replay: replay::Buffer,
+    /// A moment the driver marked that has not been saved yet.
+    mark: Option<(u64, String)>,
 }
 
 #[derive(Default)]
@@ -673,6 +680,8 @@ async fn connect(
     inner.device = Some(device.clone());
     inner.charger_confirmed = false;
     inner.capture = capture_path;
+    inner.replay.clear();
+    inner.mark = None;
     let target = vin.clone().unwrap_or_else(|| "vehicle".into());
     inner.record(
         "Connect",
@@ -713,6 +722,8 @@ async fn disconnect(state: State<'_, AppState>) -> CmdResult<()> {
     inner.device = None;
     inner.vin = None;
     inner.pack = None;
+    inner.replay.clear();
+    inner.mark = None;
     Ok(())
 }
 
@@ -734,6 +745,8 @@ async fn read_live(state: State<'_, AppState>, pids: Vec<u8>) -> CmdResult<Vec<L
             out.push(LiveValue { pid, value });
         }
     }
+    let frame = out.iter().map(|v| (v.pid, v.value)).collect();
+    inner.replay.push(now_ms() as u64, frame);
     Ok(out)
 }
 
@@ -1696,6 +1709,182 @@ async fn save_car_test(
     })
 }
 
+// ---- commands: Instant Replay -------------------------------------------
+
+#[derive(Serialize)]
+struct MarkInfo {
+    mark_ms: u64,
+    /// How much history before the mark is already in memory.
+    before_ms: u64,
+    /// How long recording continues after the mark.
+    after_ms: u64,
+}
+
+/// Marks this moment. The 30 seconds before it are already in memory;
+/// recording continues for 30 seconds after, then `replay_finish` saves it.
+#[tauri::command]
+async fn replay_mark(state: State<'_, AppState>, note: Option<String>) -> CmdResult<MarkInfo> {
+    let mut inner = state.0.lock().await;
+    let c = inner.client()?;
+    c.link_mut().capture_note("Instant Replay: moment marked");
+    let mark_ms = now_ms() as u64;
+    let oldest = inner
+        .replay
+        .window(mark_ms.saturating_sub(replay::BEFORE_MS), mark_ms)
+        .first()
+        .map(|f| f.t_ms)
+        .unwrap_or(mark_ms);
+    inner.mark = Some((mark_ms, note.unwrap_or_default().trim().to_string()));
+    inner.record(
+        "Instant Replay: mark",
+        "Live data",
+        RiskTier::Read,
+        true,
+        "Moment marked",
+    );
+    Ok(MarkInfo {
+        mark_ms,
+        before_ms: mark_ms - oldest,
+        after_ms: replay::AFTER_MS,
+    })
+}
+
+#[tauri::command]
+async fn replay_cancel(state: State<'_, AppState>) -> CmdResult<()> {
+    state.0.lock().await.mark = None;
+    Ok(())
+}
+
+fn engine_codes(list: Vec<Dtc>) -> Vec<ReplayCode> {
+    list.into_iter()
+        .map(|d| ReplayCode {
+            code: d.code,
+            status: None,
+            description: d.description.map(Into::into),
+        })
+        .collect()
+}
+
+/// Saves the marked moment: the live data around it, what changed, and the
+/// fault memory read now. Read-only: nothing is cleared or written.
+#[tauri::command]
+async fn replay_finish(
+    state: State<'_, AppState>,
+    store: State<'_, ReplayStore>,
+    modules: bool,
+) -> CmdResult<Replay> {
+    let mut inner = state.0.lock().await;
+    let (mark_ms, note) = inner
+        .mark
+        .take()
+        .ok_or_else(|| CmdError::new("no_mark", "Mark a moment first."))?;
+    let frames = inner.replay.replay_window(mark_ms);
+    let changes = replay::what_changed(&frames, mark_ms);
+    let list = if modules {
+        scan_list(&inner)
+    } else {
+        Vec::new()
+    };
+    let simulated = inner.simulated();
+    let pack = inner.pack();
+    let vin = inner.vin.clone().unwrap_or_default();
+    let c = inner.client()?;
+    c.link_mut()
+        .capture_note("Instant Replay: reading fault memory");
+    let stored = c
+        .read_obd_dtcs(Service::StoredDtcs)
+        .await
+        .unwrap_or_default();
+    let pending = c
+        .read_obd_dtcs(Service::PendingDtcs)
+        .await
+        .unwrap_or_default();
+    let mut scanned = Vec::new();
+    for m in list {
+        let s = scan_one(c, simulated, pack, m).await;
+        scanned.push(ReplayModule {
+            name: m.name.to_string(),
+            address: m.address,
+            present: s.present,
+            codes: s
+                .codes
+                .into_iter()
+                .map(|f| ReplayCode {
+                    code: f.code,
+                    status: Some(f.status),
+                    description: f.description.map(Into::into),
+                })
+                .collect(),
+        });
+    }
+    let replay = Replay {
+        id: format!("replay-{mark_ms}"),
+        vin,
+        vehicle: format!("{} {}", pack.brand, pack.model),
+        simulated,
+        mark_ms,
+        note,
+        frames,
+        changes,
+        engine_stored: engine_codes(stored),
+        engine_pending: engine_codes(pending),
+        modules: scanned,
+    };
+    store
+        .save(&replay)
+        .map_err(|e| CmdError::new("storage", format!("Could not save the replay: {e}")))?;
+    let summary = replay.summary();
+    inner.record(
+        "Instant Replay: save",
+        "Live data",
+        RiskTier::Read,
+        true,
+        format!(
+            "{:.0} s saved, {} changes, {} faults",
+            summary.seconds, summary.changes, summary.faults
+        ),
+    );
+    Ok(replay)
+}
+
+#[tauri::command]
+fn list_replays(store: State<'_, ReplayStore>) -> Vec<ReplaySummary> {
+    store.list()
+}
+
+#[tauri::command]
+fn get_replay(store: State<'_, ReplayStore>, id: String) -> CmdResult<Replay> {
+    store
+        .get(&id)
+        .ok_or_else(|| CmdError::new("unknown", "That replay is no longer saved."))
+}
+
+#[tauri::command]
+fn delete_replay(store: State<'_, ReplayStore>, id: String) -> CmdResult<()> {
+    store
+        .delete(&id)
+        .map_err(|e| CmdError::new("storage", format!("Could not delete the replay: {e}")))
+}
+
+/// Demo only: makes the practice car's engine stumble once.
+#[tauri::command]
+async fn sim_stumble(state: State<'_, AppState>) -> CmdResult<()> {
+    let mut inner = state.0.lock().await;
+    let sim =
+        inner.client()?.link_mut().simulator().ok_or_else(|| {
+            CmdError::new("unavailable", "Only the demo car can be made to stumble.")
+        })?;
+    sim.stumble();
+    inner.record(
+        "Demo: engine stumble",
+        "simulator",
+        RiskTier::Read,
+        true,
+        "Done",
+    );
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1707,6 +1896,7 @@ pub fn run() {
                 .unwrap_or_else(|_| std::env::temp_dir().join("ApexDiag"))
                 .join("snapshots");
             app.manage(RepairStore::new(dir.with_file_name("repairs")));
+            app.manage(ReplayStore::new(dir.with_file_name("replays")));
             app.manage(Captures {
                 dir: dir.with_file_name("captures"),
             });
@@ -1746,6 +1936,13 @@ pub fn run() {
             car_test_step,
             capture_info,
             save_car_test,
+            replay_mark,
+            replay_cancel,
+            replay_finish,
+            list_replays,
+            get_replay,
+            delete_replay,
+            sim_stumble,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ApexDiag");
