@@ -3,7 +3,7 @@ import { AlertTriangle, BatteryMedium, CheckCircle2, CircleHelp, ClipboardList, 
 import PageHeader from "@/components/PageHeader";
 import Empty from "@/components/Empty";
 import { Button } from "@/components/ui/button";
-import { CarSide, MAKE_ACCENT } from "@/components/illustrations/Vehicle";
+import { Car3D } from "@/components/car3d";
 import { useDiag } from "@/lib/store";
 import { useI18n, type Lang, type T, Tr } from "@/lib/i18n";
 import { api, asCmdError, type Grade, type InspectionSection, type InspectionView } from "@/lib/tauri";
@@ -105,7 +105,7 @@ export default function Inspection({ go }: { go: (p: PageId) => void }) {
         <section className="overflow-hidden rounded-2xl border border-white/[0.07] bg-[radial-gradient(ellipse_at_top_right,rgba(52,211,153,0.08),transparent_55%)] p-6">
           <div className="flex flex-col gap-6 md:flex-row md:items-center">
             <div className="md:w-[40%]">
-              <CarSide body={pack.body} accent={MAKE_ACCENT[pack.make]} scanning={running} className="w-full" />
+              <Car3D pack={pack} view="front34" scanning={running} className="aspect-[16/10] w-full" />
               <div className="mt-3 text-center text-sm font-medium">
                 {pack.brand} {pack.model}
               </div>

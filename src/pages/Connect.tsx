@@ -9,7 +9,8 @@ import { api, asCmdError, type DiscoveredDevice } from "@/lib/tauri";
 import { fmt } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { HandshakeFlow, ObdPortScene } from "@/components/illustrations/Connect";
-import { BrandChip, CarSide, MAKE_ACCENT } from "@/components/illustrations/Vehicle";
+import { BrandChip, MAKE_ACCENT } from "@/components/illustrations/Vehicle";
+import { CarStill } from "@/components/car3d";
 import type { Pack, VinInfo } from "@/lib/tauri";
 import type { PageId } from "@/App";
 
@@ -165,7 +166,7 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
                       {pack ? <BrandChip make={pack.make} brand={pack.brand} /> : <Car className="size-4" />}
                       <Badge variant="warn">{t("Demo")}</Badge>
                     </div>
-                    {pack && <CarSide body={pack.body} accent={accent} scanning={busy === d.id} className="relative my-3 w-full" />}
+                    {pack && <CarStill pack={pack} view="front34" width={560} height={250} alt={d.name} className={cn("relative -mx-3 my-1 transition", busy === d.id && "animate-pulse")} />}
                     <div className="relative font-medium">{d.name.replace(/^Demo /, "")}</div>
                     {pack && (
                       <div className="relative mt-0.5 text-[11px] text-muted-foreground">
