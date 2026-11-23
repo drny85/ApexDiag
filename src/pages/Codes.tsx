@@ -6,6 +6,7 @@ import GateDialog from "@/components/GateDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useDiag } from "@/lib/store";
+import { useT, Tr } from "@/lib/i18n";
 import { api, asCmdError, type Dtc, type EmissionsReport, type ObdCodes, type PidInfo } from "@/lib/tauri";
 import { digitsFor, fmt } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -37,6 +38,7 @@ const GROUPS = [
 
 export default function Codes({ go }: { go: (p: PageId) => void }) {
   const { connection, catalog, revision, setFocus } = useDiag();
+  const t = useT();
   const openFix = (code: string) => {
     setFocus({ code, module: null });
     go("copilot");
@@ -70,7 +72,7 @@ export default function Codes({ go }: { go: (p: PageId) => void }) {
         <PageHeader title="Fault Codes" subtitle="Emissions and engine trouble codes, explained." />
         <Empty icon={AlertTriangle} title="No car connected">
           <Button className="mt-4" onClick={() => go("connect")}>
-            <Plug /> Connect
+            <Plug /> <Tr>Connect</Tr>
           </Button>
         </Empty>
       </div>
@@ -84,7 +86,7 @@ export default function Codes({ go }: { go: (p: PageId) => void }) {
     <div>
       <PageHeader
         title="Fault Codes"
-        subtitle={`Generic OBD-II codes, emissions readiness and freeze frame from the engine module. For ${connection.vehicle.pack.make === "generic" ? "maker" : connection.vehicle.pack.brand} codes from every module (body, brakes, transmission), open Modules or run a Quick Test.`}
+        subtitle={t("Generic OBD-II codes, emissions readiness and freeze frame from the engine module. For {maker} codes from every module (body, brakes, transmission), open Modules or run a Quick Test.", { maker: connection.vehicle.pack.make === "generic" ? t("maker") : connection.vehicle.pack.brand })}
         actions={
           <>
             <Button variant="outline" onClick={load} disabled={loading}>

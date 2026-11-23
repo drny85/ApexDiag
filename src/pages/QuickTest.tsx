@@ -28,6 +28,7 @@ import { Badge } from "@/components/ui/badge";
 import CarMap, { type MapStatus } from "@/components/illustrations/CarMap";
 import { BrandChip, CarSide, MAKE_ACCENT } from "@/components/illustrations/Vehicle";
 import { useDiag } from "@/lib/store";
+import { useT, Tr } from "@/lib/i18n";
 import { api, asCmdError, type EmissionsReport, type ModuleFault, type ModuleInfo, type ModuleScan, type Pack } from "@/lib/tauri";
 import { SYSTEM_LABEL, hex } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -55,6 +56,7 @@ export function quickTestFaults(vin: string | null): { module: ModuleInfo; fault
 
 export default function QuickTest({ go }: { go: (p: PageId) => void }) {
   const { connection } = useDiag();
+  const t = useT();
   const vin = connection?.vin ?? "";
   const [run, setRun] = useState<Run | null>(() => (lastRun?.vin === vin ? lastRun : null));
   const [current, setCurrent] = useState<number | null>(null);
@@ -76,7 +78,7 @@ export default function QuickTest({ go }: { go: (p: PageId) => void }) {
         <PageHeader title="Quick Test" subtitle="One pass over the whole car: every module, its fault memory and emissions readiness." />
         <Empty icon={Cpu} title="No car connected">
           <Button className="mt-4" onClick={() => go("connect")}>
-            <Plug /> Connect
+            <Plug /> <Tr>Connect</Tr>
           </Button>
         </Empty>
       </div>
@@ -129,7 +131,7 @@ export default function QuickTest({ go }: { go: (p: PageId) => void }) {
     <div>
       <PageHeader
         title="Quick Test"
-        subtitle={`A full-vehicle scan the way ${pack.dealer_tool} runs one: every module is asked what it is and what it has stored, then emissions readiness is checked.`}
+        subtitle={t("A full-vehicle scan the way {tool} runs one: every module is asked what it is and what it has stored, then emissions readiness is checked.", { tool: pack.dealer_tool })}
         actions={
           <Button onClick={start} disabled={phase === "running"}>
             {phase === "running" ? <Loader2 className="animate-spin" /> : phase === "done" ? <RotateCw /> : <Play />}

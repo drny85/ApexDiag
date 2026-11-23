@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import App from "./App";
 import { DiagProvider } from "./lib/store";
+import { I18nProvider } from "./lib/i18n";
 import { TooltipProvider } from "./components/ui/tooltip";
 import "./index.css";
 
@@ -12,11 +13,13 @@ if (/iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === "Mac
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <TooltipProvider>
-      <DiagProvider>
-        <App />
-      </DiagProvider>
-    </TooltipProvider>
+    <I18nProvider>
+      <TooltipProvider>
+        <DiagProvider>
+          <App />
+        </DiagProvider>
+      </TooltipProvider>
+    </I18nProvider>
   </StrictMode>,
 );
 

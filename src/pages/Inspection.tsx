@@ -5,9 +5,18 @@ import Empty from "@/components/Empty";
 import { Button } from "@/components/ui/button";
 import { CarSide, MAKE_ACCENT } from "@/components/illustrations/Vehicle";
 import { useDiag } from "@/lib/store";
+import { useI18n, type Lang, type T, Tr } from "@/lib/i18n";
 import { api, asCmdError, type Grade, type InspectionSection, type InspectionView } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import type { PageId } from "@/App";
+
+/** Count chips under the overall grade: [one, many]. */
+const COUNT: Record<Grade, [string, string]> = {
+  good: ["{n} good", "{n} good"],
+  attention: ["{n} to check", "{n} to check"],
+  problem: ["{n} problem", "{n} problems"],
+  not_checked: ["{n} not checked", "{n} not checked"],
+};
 
 export const GRADE: Record<Grade, { label: string; long: string; color: string; ring: string; chip: string; icon: LucideIcon }> = {
   good: { label: "Good", long: "Looks good", color: "#34d399", ring: "ring-emerald-400/30", chip: "bg-emerald-400/10 text-emerald-300 ring-emerald-400/25", icon: CheckCircle2 },
@@ -38,6 +47,7 @@ type Phase = { step: "idle" } | { step: "basics" } | { step: "modules"; done: nu
 
 export default function Inspection({ go }: { go: (p: PageId) => void }) {
   const { connection } = useDiag();
+  const { t, lang } = useI18n();
   const [phase, setPhase] = useState<Phase>({ step: "idle" });
   const [saved, setSaved] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -49,7 +59,7 @@ export default function Inspection({ go }: { go: (p: PageId) => void }) {
         <PageHeader title="Inspection Report" subtitle="A full pre-purchase checkup with a green, amber or red grade for each area." />
         <Empty icon={ClipboardList} title="No car connected">
           <Button className="mt-4" onClick={() => go("connect")}>
-            <Plug /> Connect
+            <Plug /> <Tr>Connect</Tr>
           </Button>
         </Empty>
       </div>
@@ -74,7 +84,7 @@ export default function Inspection({ go }: { go: (p: PageId) => void }) {
         const s = await api.scanModule(address).catch(() => null);
         if (s) scanned.push({ address, present: s.present, codes: s.codes.map((c) => ({ code: c.code, description: c.description })) });
       }
-      const view = await api.inspectionFinish(scanned);
+      const view = await api.inspectionFinish(scanned, lang);
       setPhase({ step: "done", view });
     } catch (e) {
       setPhase({ step: "error", message: asCmdError(e).message });
@@ -99,7 +109,7 @@ export default function Inspection({ go }: { go: (p: PageId) => void }) {
               <div className="mt-3 text-center text-sm font-medium">
                 {pack.brand} {pack.model}
               </div>
-              <div className="text-center font-mono text-[11px] text-muted-foreground">{connection.vin ?? "VIN not read"}</div>
+              <div className="text-center font-mono text-[11px] text-muted-foreground">{connection.vin ?? t("VIN not read")}</div>
             </div>
             <div className="flex-1">
               <ul className="grid gap-3 sm:grid-cols-2">
@@ -111,8 +121,8 @@ export default function Inspection({ go }: { go: (p: PageId) => void }) {
                         <Icon className="size-4 text-emerald-300" />
                       </span>
                       <div>
-                        <div className="text-sm font-medium">{c.title}</div>
-                        <div className="text-xs text-muted-foreground">{c.text}</div>
+                        <div className="text-sm font-medium">{t(c.title)}</div>
+                        <div className="text-xs text-muted-foreground">{t(c.text)}</div>
                       </div>
                     </li>
                   );
@@ -121,9 +131,9 @@ export default function Inspection({ go }: { go: (p: PageId) => void }) {
               {running ? (
                 <div className="mt-5">
                   <div className="flex justify-between text-xs text-muted-foreground">
-                    <span>{phase.step === "basics" ? "Reading engine codes, readiness and battery…" : `Asking ${phase.name || "module"} (${phase.done + 1} of ${phase.total})…`}</span>
+                    <span>{phase.step === "basics" ? t("Reading engine codes, readiness and battery…") : t("Asking {name} ({n} of {total})…", { name: phase.name || t("module"), n: phase.done + 1, total: phase.total })}</span>
                     <button className="hover:text-foreground" onClick={() => (cancelled.current = true)}>
-                      Stop
+                      {t("Stop")}
                     </button>
                   </div>
                   <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-white/[0.06]">
@@ -133,9 +143,9 @@ export default function Inspection({ go }: { go: (p: PageId) => void }) {
               ) : (
                 <div className="mt-5 flex flex-wrap items-center gap-3">
                   <Button onClick={start} className="from-emerald-300 to-emerald-400 shadow-emerald-500/20 hover:from-emerald-200 hover:to-emerald-300">
-                    <ClipboardList /> Start inspection
+                    <ClipboardList /> {t("Start inspection")}
                   </Button>
-                  <span className="text-xs text-muted-foreground">Tip: run it with the engine off, then again running, to check both the battery and charging.</span>
+                  <span className="text-xs text-muted-foreground">{t("Tip: run it with the engine off, then again running, to check both the battery and charging.")}</span>
                 </div>
               )}
               {phase.step === "error" && (
@@ -159,7 +169,7 @@ export default function Inspection({ go }: { go: (p: PageId) => void }) {
             const stamp = new Date(v.at_ms).toISOString().slice(0, 16).replace(/[:T]/g, "-");
             const base = `inspection-${v.vin ?? "car"}-${stamp}`;
             try {
-              const path = await api.saveDocument(`${base}.html`, reportHtml(v));
+              const path = await api.saveDocument(`${base}.html`, reportHtml(v, t, lang));
               await api.saveDocument(`${base}.json`, JSON.stringify(v, null, 2));
               setSaved(path);
               setSaveError(null);
@@ -174,12 +184,13 @@ export default function Inspection({ go }: { go: (p: PageId) => void }) {
 }
 
 function Result({ view, saved, saveError, onAgain, onSave }: { view: InspectionView; saved: string | null; saveError: string | null; onAgain: () => void; onSave: () => void }) {
+  const { t, lang } = useI18n();
   const g = GRADE[view.report.overall];
   const counts = (["good", "attention", "problem", "not_checked"] as Grade[]).map((k) => ({ k, n: view.report.sections.filter((s) => s.grade === k).length }));
   const share = async () => {
-    const text = shareText(view);
+    const text = shareText(view, t, lang);
     try {
-      if (navigator.share) await navigator.share({ title: "Inspection report", text });
+      if (navigator.share) await navigator.share({ title: t("Inspection report"), text });
       else await navigator.clipboard.writeText(text);
     } catch {
       /* cancelled */
@@ -192,34 +203,34 @@ function Result({ view, saved, saveError, onAgain, onSave }: { view: InspectionV
           <GradeRing grade={view.report.overall} sections={view.report.sections} />
           <div className="flex-1">
             <div className="text-xs font-medium uppercase tracking-[0.14em]" style={{ color: g.color }}>
-              {g.long}
+              {t(g.long)}
             </div>
             <div className="mt-1 text-2xl font-semibold tracking-tight">{view.report.summary}</div>
             <div className="mt-2 text-sm text-muted-foreground">
-              {view.vehicle} · <span className="font-mono">{view.vin ?? "VIN not read"}</span> · {new Date(view.at_ms).toLocaleString()}
-              {view.simulated && " · demo car"}
+              {view.vehicle} · <span className="font-mono">{view.vin ?? t("VIN not read")}</span> · {new Date(view.at_ms).toLocaleString(lang)}
+              {view.simulated && ` · ${t("demo car")}`}
             </div>
             <div className="mt-3 flex flex-wrap gap-2">
               {counts
                 .filter((c) => c.n > 0)
                 .map(({ k, n }) => (
                   <span key={k} className={cn("rounded-md px-2 py-0.5 text-xs ring-1 ring-inset", GRADE[k].chip)}>
-                    {n} {GRADE[k].label.toLowerCase()}
+                    {t(n === 1 ? COUNT[k][0] : COUNT[k][1], { n })}
                   </span>
                 ))}
             </div>
             <div className="mt-4 flex flex-wrap gap-2">
               <Button onClick={onSave}>
-                <Download /> Save report
+                <Download /> {t("Save report")}
               </Button>
               <Button variant="outline" onClick={share}>
-                <Share2 /> Share summary
+                <Share2 /> {t("Share summary")}
               </Button>
               <Button variant="ghost" onClick={onAgain}>
-                <RotateCcw /> Run again
+                <RotateCcw /> {t("Run again")}
               </Button>
             </div>
-            {saved && <p className="mt-2 text-xs text-emerald-300">Saved to {saved}. Open it in a browser to print or save as PDF.</p>}
+            {saved && <p className="mt-2 text-xs text-emerald-300">{t("Saved to {path}. Open it in a browser to print or save as PDF.", { path: saved })}</p>}
             {saveError && <p className="mt-2 text-xs text-amber-200">{saveError}</p>}
           </div>
         </div>
@@ -233,7 +244,7 @@ function Result({ view, saved, saveError, onAgain, onSave }: { view: InspectionV
 
       <p className="flex items-start gap-2 text-xs text-muted-foreground">
         <ShieldAlert className="mt-0.5 size-3.5 shrink-0" />
-        This report reads the car's electronics only. It doesn't replace a mechanic's physical inspection of tyres, brakes, rust, leaks or accident damage.
+        {t("This report reads the car's electronics only. It doesn't replace a mechanic's physical inspection of tyres, brakes, rust, leaks or accident damage.")}
       </p>
     </div>
   );
@@ -241,6 +252,7 @@ function Result({ view, saved, saveError, onAgain, onSave }: { view: InspectionV
 
 /** Ring split into one arc per area, coloured by its grade. */
 function GradeRing({ grade, sections }: { grade: Grade; sections: InspectionSection[] }) {
+  const { t } = useI18n();
   const g = GRADE[grade];
   const Icon = g.icon;
   const r = 52;
@@ -272,7 +284,7 @@ function GradeRing({ grade, sections }: { grade: Grade; sections: InspectionSect
         <div>
           <Icon className="mx-auto size-7" style={{ color: g.color }} />
           <div className="mt-1 text-sm font-semibold" style={{ color: g.color }}>
-            {g.label}
+            {t(g.label)}
           </div>
         </div>
       </div>
@@ -281,6 +293,7 @@ function GradeRing({ grade, sections }: { grade: Grade; sections: InspectionSect
 }
 
 function SectionCard({ s }: { s: InspectionSection }) {
+  const { t } = useI18n();
   const g = GRADE[s.grade];
   const Icon = AREA_ICON[s.id] ?? Wrench;
   return (
@@ -291,7 +304,7 @@ function SectionCard({ s }: { s: InspectionSection }) {
           <Icon className="size-4 text-muted-foreground" />
           <h3 className="font-medium">{s.title}</h3>
         </div>
-        <span className={cn("shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset", g.chip)}>{g.label}</span>
+        <span className={cn("shrink-0 rounded-md px-2 py-0.5 text-xs font-medium ring-1 ring-inset", g.chip)}>{t(g.label)}</span>
       </div>
       <p className="mt-2 text-sm">{s.headline}</p>
       {s.details.length > 0 && (
@@ -305,38 +318,44 @@ function SectionCard({ s }: { s: InspectionSection }) {
         </ul>
       )}
       <p className="mt-3 border-t border-white/[0.05] pt-2 text-[11px] text-muted-foreground/90">
-        <span className="font-medium text-foreground/70">Why it matters: </span>
+        <span className="font-medium text-foreground/70">{t("Why it matters:")} </span>
         {s.why}
       </p>
     </section>
   );
 }
 
-function shareText(v: InspectionView) {
-  const lines = [`Inspection report: ${v.vehicle}${v.vin ? ` (${v.vin})` : ""}`, new Date(v.at_ms).toLocaleString(), "", `Overall: ${GRADE[v.report.overall].long}. ${v.report.summary}`, ""];
-  for (const s of v.report.sections) lines.push(`${GRADE[s.grade].label.toUpperCase()}  ${s.title}: ${s.headline}`);
-  lines.push("", "Made with ApexDiag. Electronic checks only.");
+function shareText(v: InspectionView, t: T, lang: Lang) {
+  const lines = [
+    `${t("Inspection report")}: ${v.vehicle}${v.vin ? ` (${v.vin})` : ""}`,
+    new Date(v.at_ms).toLocaleString(lang),
+    "",
+    `${t("Overall")}: ${t(GRADE[v.report.overall].long)}. ${v.report.summary}`,
+    "",
+  ];
+  for (const s of v.report.sections) lines.push(`${t(GRADE[s.grade].label).toUpperCase()}  ${s.title}: ${s.headline}`);
+  lines.push("", t("Made with ApexDiag. Electronic checks only."));
   return lines.join("\n");
 }
 
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]!);
 
 /** A standalone, print-friendly page: opens in any browser, prints to PDF. */
-export function reportHtml(v: InspectionView) {
+export function reportHtml(v: InspectionView, t: T, lang: Lang) {
   const tone: Record<Grade, string> = { good: "#059669", attention: "#d97706", problem: "#e11d48", not_checked: "#64748b" };
   const sections = v.report.sections
     .map(
       (s) => `<section style="border-left:4px solid ${tone[s.grade]}">
-  <div class="row"><h3>${esc(s.title)}</h3><span class="chip" style="color:${tone[s.grade]};border-color:${tone[s.grade]}">${GRADE[s.grade].label}</span></div>
+  <div class="row"><h3>${esc(s.title)}</h3><span class="chip" style="color:${tone[s.grade]};border-color:${tone[s.grade]}">${esc(t(GRADE[s.grade].label))}</span></div>
   <p class="head">${esc(s.headline)}</p>
   ${s.details.length ? `<ul>${s.details.map((d) => `<li>${esc(d)}</li>`).join("")}</ul>` : ""}
-  <p class="why"><b>Why it matters:</b> ${esc(s.why)}</p>
+  <p class="why"><b>${esc(t("Why it matters:"))}</b> ${esc(s.why)}</p>
 </section>`,
     )
     .join("\n");
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Inspection report · ${esc(v.vehicle)}</title>
+<html lang="${lang}"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>${esc(t("Inspection report"))} · ${esc(v.vehicle)}</title>
 <style>
   body{font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;color:#0f172a;background:#fff;max-width:820px;margin:32px auto;padding:0 20px}
   h1{font-size:24px;margin:0} h3{font-size:15px;margin:0}
@@ -349,10 +368,10 @@ export function reportHtml(v: InspectionView) {
   .head{margin:6px 0} ul{margin:4px 0 6px;padding-left:18px;color:#334155;font-size:13px}
   .why{color:#64748b;font-size:12px;margin:6px 0 0} footer{color:#64748b;font-size:12px;margin-top:24px;border-top:1px solid #e2e8f0;padding-top:10px}
 </style></head><body>
-<h1>Inspection report</h1>
-<div class="meta">${esc(v.vehicle)} · VIN ${esc(v.vin ?? "not read")} · ${esc(new Date(v.at_ms).toLocaleString())}${v.simulated ? " · demo car (simulated data)" : ""}</div>
-<div class="overall" style="background:${tone[v.report.overall]}"><b>${GRADE[v.report.overall].long}</b><span>${esc(v.report.summary)}</span></div>
+<h1>${esc(t("Inspection report"))}</h1>
+<div class="meta">${esc(v.vehicle)} · VIN ${esc(v.vin ?? t("not read"))} · ${esc(new Date(v.at_ms).toLocaleString(lang))}${v.simulated ? ` · ${esc(t("demo car (simulated data)"))}` : ""}</div>
+<div class="overall" style="background:${tone[v.report.overall]}"><b>${esc(t(GRADE[v.report.overall].long))}</b><span>${esc(v.report.summary)}</span></div>
 ${sections}
-<footer>Made with ApexDiag. These are read-only electronic checks; they don't replace a mechanic's physical inspection of tyres, brakes, rust, leaks or accident damage.</footer>
+<footer>${esc(t("Made with ApexDiag. These are read-only electronic checks; they don't replace a mechanic's physical inspection of tyres, brakes, rust, leaks or accident damage."))}</footer>
 </body></html>`;
 }

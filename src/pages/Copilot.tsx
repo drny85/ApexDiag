@@ -36,6 +36,7 @@ import { api, asCmdError, type CheckId, type CheckResult, type Playbook, type Re
 import { quickTestFaults } from "@/pages/QuickTest";
 import { cn } from "@/lib/utils";
 import type { PageId } from "@/App";
+import { Tr } from "@/lib/i18n";
 
 interface Fault {
   code: string;
@@ -99,7 +100,7 @@ export default function Copilot({ go }: { go: (p: PageId) => void }) {
         <PageHeader title="Repair Copilot" subtitle="From fault code to proven fix: likely causes, what they cost, guided tests and a service record." />
         <Empty icon={Wrench} title="No car connected">
           <Button className="mt-4" onClick={() => go("connect")}>
-            <Plug /> Connect
+            <Plug /> <Tr>Connect</Tr>
           </Button>
         </Empty>
       </div>

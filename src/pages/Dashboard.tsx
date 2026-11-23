@@ -7,6 +7,7 @@ import PageHeader from "@/components/PageHeader";
 import Empty from "@/components/Empty";
 import { Button } from "@/components/ui/button";
 import { useDiag } from "@/lib/store";
+import { useT, Tr } from "@/lib/i18n";
 import { api } from "@/lib/tauri";
 import { digitsFor, fmt } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -25,6 +26,7 @@ const TRENDS: { pid: number; color: string; band?: [number, number] }[] = [
 
 export default function Dashboard({ go }: { go: (p: PageId) => void }) {
   const { connection, live, catalog, vehicle, bump } = useDiag();
+  const t = useT();
   const [toggling, setToggling] = useState(false);
 
   if (!connection) {
@@ -33,7 +35,7 @@ export default function Dashboard({ go }: { go: (p: PageId) => void }) {
         <PageHeader title="Live Data" subtitle="Real-time engine readings, refreshed several times a second." />
         <Empty icon={Activity} title="No car connected">
           <Button className="mt-4" onClick={() => go("connect")}>
-            <Plug /> Connect
+            <Plug /> <Tr>Connect</Tr>
           </Button>
         </Empty>
       </div>
@@ -58,7 +60,7 @@ export default function Dashboard({ go }: { go: (p: PageId) => void }) {
         actions={
           connection.simulated && (
             <Button variant="outline" onClick={toggleEngine} disabled={toggling}>
-              {running ? <Pause /> : <Play />} {running ? "Stop demo engine" : "Start demo engine"}
+              {running ? <Pause /> : <Play />} {running ? t("Stop demo engine") : t("Start demo engine")}
             </Button>
           )
         }
@@ -66,16 +68,16 @@ export default function Dashboard({ go }: { go: (p: PageId) => void }) {
 
       <div className="grid grid-cols-2 gap-4 xl:grid-cols-4">
         <GaugeCard pid={0x0c} explain={info(0x0c)?.explain}>
-          <Gauge label="Engine" unit="rpm" value={live.get(0x0c)} min={0} max={7000} redFrom={6500} majorStep={1000} labelScale={1000} />
+          <Gauge label={t("Engine")} unit="rpm" value={live.get(0x0c)} min={0} max={7000} redFrom={6500} majorStep={1000} labelScale={1000} />
         </GaugeCard>
         <GaugeCard pid={0x0d} explain={info(0x0d)?.explain}>
-          <Gauge label="Speed" unit="km/h" value={live.get(0x0d)} min={0} max={240} majorStep={40} />
+          <Gauge label={t("Speed")} unit="km/h" value={live.get(0x0d)} min={0} max={240} majorStep={40} />
         </GaugeCard>
         <GaugeCard pid={0x05} explain={info(0x05)?.explain}>
-          <Gauge label="Coolant" unit="°C" value={live.get(0x05)} min={40} max={130} warnFrom={112} redFrom={118} lowBelow={75} majorStep={15} />
+          <Gauge label={t("Coolant")} unit="°C" value={live.get(0x05)} min={40} max={130} warnFrom={112} redFrom={118} lowBelow={75} majorStep={15} />
         </GaugeCard>
         <GaugeCard pid={0x42} explain={info(0x42)?.explain}>
-          <Gauge label="System" unit="volts" value={live.get(0x42)} min={10} max={16} lowBelow={12.2} warnFrom={14.9} redFrom={15.3} majorStep={1} digits={2} />
+          <Gauge label={t("System")} unit={t("volts")} value={live.get(0x42)} min={10} max={16} lowBelow={12.2} warnFrom={14.9} redFrom={15.3} majorStep={1} digits={2} />
         </GaugeCard>
       </div>
 
@@ -89,7 +91,7 @@ export default function Dashboard({ go }: { go: (p: PageId) => void }) {
             <div key={pid} className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-1.5">
-                  <span className="truncate text-xs font-medium text-muted-foreground">{p.name}</span>
+                  <span className="truncate text-xs font-medium text-muted-foreground">{t(p.name)}</span>
                   <InfoTip text={p.explain} />
                 </div>
                 <span className="size-1.5 shrink-0 rounded-full" style={{ background: color }} />
@@ -129,16 +131,17 @@ function GaugeCard({ pid, explain, children }: { pid: number; explain?: string; 
 
 function AllValues() {
   const { live, catalog } = useDiag();
+  const t = useT();
   const rows = catalog?.pids.filter((p) => live.has(p.pid)) ?? [];
   return (
     <div className="mt-4 overflow-hidden rounded-2xl border border-white/[0.07]">
       <div className="border-b border-white/[0.06] bg-white/[0.02] px-4 py-2.5 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
-        All streamed values
+        {t("All streamed values")}
       </div>
       <div className="divide-y divide-white/[0.05]">
         {rows.map((p) => (
           <div key={p.pid} className="grid grid-cols-[1fr_auto] items-center gap-4 px-4 py-2.5 text-sm md:grid-cols-[220px_110px_1fr]">
-            <div className="font-medium">{p.name}</div>
+            <div className="font-medium">{t(p.name)}</div>
             <div className="text-right font-mono tabular-nums md:text-left">
               {fmt(live.get(p.pid), digitsFor(p.unit))} <span className="text-muted-foreground">{p.unit}</span>
             </div>

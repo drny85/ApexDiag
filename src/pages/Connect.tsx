@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PageHeader from "@/components/PageHeader";
 import { useDiag } from "@/lib/store";
+import { useT, type T } from "@/lib/i18n";
 import { api, asCmdError, type DiscoveredDevice } from "@/lib/tauri";
 import { fmt } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,7 @@ import type { PageId } from "@/App";
 
 export default function Connect({ go }: { go: (p: PageId) => void }) {
   const { connection, setConnection, catalog } = useDiag();
+  const t = useT();
   const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -49,7 +51,7 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
   const connect = async (d: DiscoveredDevice) => {
     setBusy(d.id);
     setError(null);
-    setLines([`Opening ${d.name}…`]);
+    setLines([t("Opening {name}…", { name: d.name })]);
     setStep(0);
     try {
       const report = await api.connect(d.id);
@@ -62,7 +64,7 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
         await new Promise((r) => setTimeout(r, 70));
       }
       setStep(3);
-      setLines((x) => [...x, `✓ ${report.adapter.version} ready · VIN ${report.vin ?? "unknown"}`]);
+      setLines((x) => [...x, `✓ ${t("{adapter} ready · VIN {vin}", { adapter: report.adapter.version, vin: report.vin ?? t("unknown") })}`]);
       setConnection(report);
     } catch (e) {
       const err = asCmdError(e);
@@ -86,7 +88,7 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
       <PageHeader
         title="Connect"
         subtitle="Pick an adapter. ApexDiag runs the adapter handshake, reads the VIN, and checks what the car supports."
-        actions={connection && <Button variant="outline" onClick={disconnect}><Power /> Disconnect</Button>}
+        actions={connection && <Button variant="outline" onClick={disconnect}><Power /> {t("Disconnect")}</Button>}
       />
 
       {connection ? (
@@ -94,7 +96,7 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
       ) : (
         <>
           <div className="flex flex-wrap items-end justify-between gap-3">
-            <SectionTitle title="Adapters" hint="Your own adapter, plugged into the car with the ignition on." />
+            <SectionTitle title={t("Adapters")} hint={t("Your own adapter, plugged into the car with the ignition on.")} />
             <div className="mb-3 flex items-center gap-2">
               <label className="flex min-h-11 cursor-pointer items-center gap-2 px-2 text-xs text-muted-foreground">
                 <input
@@ -103,11 +105,11 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
                   checked={showAll}
                   onChange={(e) => setShowAll(e.target.checked)}
                 />
-                Show all Bluetooth devices
+                {t("Show all Bluetooth devices")}
               </label>
               <Button variant="outline" disabled={scanning || busy !== null} onClick={() => scanBle()}>
                 {scanning ? <Loader2 className="animate-spin" /> : <Radar />}
-                {scanning ? "Scanning" : scanned ? "Scan again" : "Scan Bluetooth"}
+                {scanning ? t("Scanning") : scanned ? t("Scan again") : t("Scan Bluetooth")}
               </Button>
             </div>
           </div>
@@ -120,31 +122,30 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
                     <div className="grid size-10 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
                       <Bluetooth className="size-5 text-cyan-300" />
                     </div>
-                    <Badge variant={d.available ? "default" : "muted"}>{d.available ? "Found" : "Not scanned"}</Badge>
+                    <Badge variant={d.available ? "default" : "muted"}>{d.available ? t("Found") : t("Not scanned")}</Badge>
                   </div>
-                  <div className="font-medium">{d.name}</div>
-                  <p className="mt-1 flex-1 text-sm text-muted-foreground">{d.detail}</p>
+                  <div className="font-medium">{t(d.name)}</div>
+                  <p className="mt-1 flex-1 text-sm text-muted-foreground">{t(d.detail)}</p>
                   {d.available ? (
                     <Button className="mt-5" disabled={busy !== null || scanning} onClick={() => connect(d)}>
                       {busy === d.id ? <Loader2 className="animate-spin" /> : <Plug />}
-                      {busy === d.id ? "Connecting" : "Connect"}
+                      {busy === d.id ? t("Connecting") : t("Connect")}
                     </Button>
                   ) : (
                     <Button className="mt-5" variant="secondary" disabled={scanning || busy !== null} onClick={() => scanBle()}>
                       {scanning ? <Loader2 className="animate-spin" /> : <Radar />}
-                      {scanning ? "Scanning for 4 seconds" : "Scan Bluetooth"}
+                      {scanning ? t("Scanning for 4 seconds") : t("Scan Bluetooth")}
                     </Button>
                   )}
                 </div>
               ))}
             {scanned && !devices.some((d) => d.transport.kind === "ble" && d.available) && (
               <div className="rounded-2xl border border-amber-400/20 bg-amber-400/[0.04] p-5 text-sm text-amber-100/80">
-                No OBD adapter answered. Check that the adapter's light is on and the ignition is on, then scan again.
-                If it still does not show, tick "Show all Bluetooth devices". Do not pair it in iPad Settings; ApexDiag connects to it directly.
+                {t("No OBD adapter answered. Check that the adapter's light is on and the ignition is on, then scan again. If it still does not show, tick \"Show all Bluetooth devices\". Do not pair it in iPad Settings; ApexDiag connects to it directly.")}
               </div>
             )}
           </div>
-          <SectionTitle title="Practice cars" hint="Simulated cars with invented faults, one per vehicle pack. Nothing here touches a real car." />
+          <SectionTitle title={t("Practice cars")} hint={t("Simulated cars with invented faults, one per vehicle pack. Nothing here touches a real car.")} />
           <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
             {devices
               .filter((d) => d.transport.kind === "simulator")
@@ -162,19 +163,19 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
                     />
                     <div className="relative flex items-center justify-between">
                       {pack ? <BrandChip make={pack.make} brand={pack.brand} /> : <Car className="size-4" />}
-                      <Badge variant="warn">Demo</Badge>
+                      <Badge variant="warn">{t("Demo")}</Badge>
                     </div>
                     {pack && <CarSide body={pack.body} accent={accent} scanning={busy === d.id} className="relative my-3 w-full" />}
                     <div className="relative font-medium">{d.name.replace(/^Demo /, "")}</div>
                     {pack && (
                       <div className="relative mt-0.5 text-[11px] text-muted-foreground">
-                        {pack.years} · {pack.modules.length} modules · {pack.make === "bmw" ? "KWP2000" : "UDS"}
+                        {t(pack.years)} · {t("{n} modules", { n: pack.modules.length })} · {pack.make === "bmw" ? "KWP2000" : "UDS"}
                       </div>
                     )}
-                    <p className="relative mt-2 flex-1 text-sm leading-snug text-muted-foreground">{d.detail.replace(/ Practice car, fake data\.$/, "")}</p>
+                    <p className="relative mt-2 flex-1 text-sm leading-snug text-muted-foreground">{t(d.detail.replace(/ Practice car, fake data\.$/, ""))}</p>
                     <Button className="relative mt-4" variant="secondary" disabled={busy !== null} onClick={() => connect(d)}>
                       {busy === d.id ? <Loader2 className="animate-spin" /> : <Plug />}
-                      {busy === d.id ? "Connecting" : "Connect"}
+                      {busy === d.id ? t("Connecting") : t("Connect")}
                     </Button>
                   </div>
                 );
@@ -191,7 +192,7 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
             <HandshakeFlow step={connection ? 3 : step} className="mx-auto h-24 w-full max-w-xl" />
           </div>
           <div className="flex items-center gap-2 border-b border-white/[0.06] px-4 py-2 text-xs text-muted-foreground">
-            <span className="size-2 rounded-full bg-cyan-400/80" /> Adapter conversation
+            <span className="size-2 rounded-full bg-cyan-400/80" /> {t("Adapter conversation")}
           </div>
           <div ref={consoleRef} className="max-h-56 overflow-auto px-4 py-3 font-mono text-[12px] leading-relaxed text-cyan-100/80">
             {lines.map((l, i) => (
@@ -226,17 +227,18 @@ function SectionTitle({ title, hint }: { title: string; hint: string }) {
 }
 
 function PlugInGuide() {
+  const t = useT();
   const steps = [
-    ["Ignition on", "Press Start once without your foot on the brake. The engine doesn't need to run."],
-    ["Plug in the adapter", "Under the dashboard on the driver's side, usually within reach of your left knee. On many BMWs it sits by the hood release."],
-    ["Wait for its light", "The adapter's LED comes on when it has power from the car."],
-    ["Pick it above", "ApexDiag finds it over Bluetooth and does the rest."],
+    [t("Ignition on"), t("Press Start once without your foot on the brake. The engine doesn't need to run.")],
+    [t("Plug in the adapter"), t("Under the dashboard on the driver's side, usually within reach of your left knee. On many BMWs it sits by the hood release.")],
+    [t("Wait for its light"), t("The adapter's LED comes on when it has power from the car.")],
+    [t("Pick it above"), t("ApexDiag finds it over Bluetooth and does the rest.")],
   ];
   return (
     <section className="mt-6 grid items-center gap-6 overflow-hidden rounded-2xl border border-white/[0.07] bg-gradient-to-br from-white/[0.03] to-transparent p-6 lg:grid-cols-[1.1fr_1fr]">
       <ObdPortScene className="w-full max-w-lg" />
       <div>
-        <h3 className="text-sm font-semibold">Plugging in</h3>
+        <h3 className="text-sm font-semibold">{t("Plugging in")}</h3>
         <ol className="mt-3 space-y-3">
           {steps.map(([t, d], i) => (
             <li key={t} className="flex gap-3">
@@ -250,7 +252,7 @@ function PlugInGuide() {
             </li>
           ))}
         </ol>
-        <p className="mt-4 text-[11px] text-muted-foreground">The drawing shows the general area, not your exact trim.</p>
+        <p className="mt-4 text-[11px] text-muted-foreground">{t("The drawing shows the general area, not your exact trim.")}</p>
       </div>
     </section>
   );
@@ -258,26 +260,27 @@ function PlugInGuide() {
 
 function VehicleSummary({ go }: { go: (p: PageId) => void }) {
   const { connection, live } = useDiag();
+  const t = useT();
   if (!connection) return null;
   const c = connection;
   const pack = c.vehicle.pack;
   const bmw = pack.make === "bmw";
   const facts: [string, React.ReactNode][] = [
-    ["Adapter", c.adapter.version],
-    ["Protocol", "ISO 15765-4 CAN · 11-bit · 500 kbit/s"],
+    [t("Adapter"), c.adapter.version],
+    [t("Protocol"), "ISO 15765-4 CAN · 11-bit · 500 kbit/s"],
     [
-      "Module access",
+      t("Module access"),
       bmw
         ? c.adapter.supports_extended_addressing
-          ? "KWP2000 over D-CAN (extended addressing)"
-          : "Not supported by this adapter"
+          ? t("KWP2000 over D-CAN (extended addressing)")
+          : t("Not supported by this adapter")
         : pack.make === "generic"
-          ? "Generic OBD-II only"
-          : "UDS (ISO 14229) on 11-bit CAN",
+          ? t("Generic OBD-II only")
+          : t("UDS (ISO 14229) on 11-bit CAN"),
     ],
-    ["Vehicle pack", pack.make === "generic" ? "None yet" : `${pack.brand} ${pack.chassis} · ${pack.layout === "documented" ? "documented addresses" : "demo layout"}`],
-    ["Live parameters", `${c.supported_pids.length} supported`],
-    ["Battery", `${fmt(live.get(0x42) ?? c.battery_v ?? undefined, 2)} V`],
+    [t("Vehicle pack"), pack.make === "generic" ? t("None yet") : `${pack.brand} ${pack.chassis} · ${pack.layout === "documented" ? t("documented addresses") : t("demo layout")}`],
+    [t("Live parameters"), t("{n} supported", { n: c.supported_pids.length })],
+    [t("Battery"), `${fmt(live.get(0x42) ?? c.battery_v ?? undefined, 2)} V`],
   ];
   return (
     <div className="grid gap-4 lg:grid-cols-[1.4fr_1fr]">
@@ -285,15 +288,15 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
         <div className="absolute -right-24 -top-24 size-72 rounded-full bg-cyan-400/10 blur-3xl" />
         <div className="relative">
           <div className="flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-muted-foreground">
-            <CheckCircle2 className="size-3.5 text-emerald-400" /> Connected {c.simulated && <Badge variant="warn" className="ml-1">Demo data</Badge>}
+            <CheckCircle2 className="size-3.5 text-emerald-400" /> {t("Connected")} {c.simulated && <Badge variant="warn" className="ml-1">{t("Demo data")}</Badge>}
           </div>
           <div className="mt-3 flex items-center gap-3">
             <BrandChip make={pack.make} brand={pack.brand} />
-            <span className="text-xs text-muted-foreground">Works like {pack.dealer_tool}</span>
+            <span className="text-xs text-muted-foreground">{t("Works like {tool}", { tool: pack.dealer_tool })}</span>
           </div>
-          <div className="mt-2 text-2xl font-semibold">{vehicleTitle(pack, c.vehicle.vin_info)}</div>
-          <div className="mt-1 font-mono text-sm tracking-wider text-cyan-200/80">VIN {c.vin ?? "unavailable"}</div>
-          {c.vehicle.demo_story && <p className="mt-2 max-w-lg text-sm text-muted-foreground">{c.vehicle.demo_story}</p>}
+          <div className="mt-2 text-2xl font-semibold">{vehicleTitle(pack, c.vehicle.vin_info, t)}</div>
+          <div className="mt-1 font-mono text-sm tracking-wider text-cyan-200/80">VIN {c.vin ?? t("unavailable")}</div>
+          {c.vehicle.demo_story && <p className="mt-2 max-w-lg text-sm text-muted-foreground">{t(c.vehicle.demo_story)}</p>}
           <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-4 text-sm">
             {facts.map(([k, v]) => (
               <div key={k}>
@@ -302,7 +305,7 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
               </div>
             ))}
           </dl>
-          {c.vehicle.vin_info && <VinCard info={c.vehicle.vin_info} />}
+          {c.vehicle.vin_info && <VinCard info={c.vehicle.vin_info} t={t} />}
         </div>
       </div>
       <div className="flex flex-col gap-4">
@@ -314,22 +317,24 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
         >
           <div className="flex items-center gap-2 font-medium">
             <CircleAlert className={cn("size-4", c.mil?.mil_on ? "text-amber-300" : "text-emerald-300")} />
-            {c.mil?.mil_on ? "Check-engine light is on" : "Check-engine light is off"}
+            {c.mil?.mil_on ? t("Check-engine light is on") : t("Check-engine light is off")}
           </div>
           <p className="mt-1 text-sm text-muted-foreground">
             {c.mil?.mil_on
-              ? `${c.mil.dtc_count} confirmed emissions code${c.mil.dtc_count === 1 ? "" : "s"} stored in the engine module.`
-              : "No confirmed emissions faults."}
+              ? c.mil.dtc_count === 1
+                ? t("1 confirmed emissions code stored in the engine module.")
+                : t("{n} confirmed emissions codes stored in the engine module.", { n: c.mil.dtc_count })
+              : t("No confirmed emissions faults.")}
           </p>
           <Button variant="secondary" size="sm" className="mt-4" onClick={() => go("codes")}>
-            Review fault codes <ArrowRight />
+            {t("Review fault codes")} <ArrowRight />
           </Button>
         </div>
         <div className="rounded-2xl border border-white/[0.07] bg-white/[0.02] px-4 pb-2 pt-3">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
-            <span>Link</span>
+            <span>{t("Link")}</span>
             <span className="flex items-center gap-1.5">
-              <span className="size-1.5 animate-pulse rounded-full bg-cyan-300" /> keep-alive every 2 s
+              <span className="size-1.5 animate-pulse rounded-full bg-cyan-300" /> {t("keep-alive every 2 s")}
             </span>
           </div>
           <HandshakeFlow step={3} className="mx-auto mt-1 h-20 w-full" />
@@ -342,14 +347,14 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
             <Radar className="size-5 text-cyan-200" />
           </div>
           <div className="flex-1">
-            <div className="font-medium">Run a Quick Test</div>
-            <div className="text-xs text-muted-foreground">Every module, every fault, emissions readiness. About a minute on a real car.</div>
+            <div className="font-medium">{t("Run a Quick Test")}</div>
+            <div className="text-xs text-muted-foreground">{t("Every module, every fault, emissions readiness. About a minute on a real car.")}</div>
           </div>
           <ArrowRight className="size-4 text-cyan-200 transition group-hover:translate-x-0.5" />
         </button>
         <div className="grid grid-cols-2 gap-3">
-          <QuickAction icon={GaugeIcon} label="Live dashboard" onClick={() => go("dashboard")} />
-          <QuickAction icon={ScanSearch} label="Modules" onClick={() => go("modules")} />
+          <QuickAction icon={GaugeIcon} label={t("Live dashboard")} onClick={() => go("dashboard")} />
+          <QuickAction icon={ScanSearch} label={t("Modules")} onClick={() => go("modules")} />
         </div>
       </div>
     </div>
@@ -368,40 +373,40 @@ function QuickAction({ icon: Icon, label, onClick }: { icon: typeof Car; label: 
   );
 }
 
-function vehicleTitle(pack: Pack, vin: VinInfo | null) {
-  if (pack.make === "generic") return vin?.manufacturer ? `${vin.manufacturer} vehicle` : "OBD-II vehicle";
+function vehicleTitle(pack: Pack, vin: VinInfo | null, t: T) {
+  if (pack.make === "generic") return vin?.manufacturer ? t("{maker} vehicle", { maker: vin.manufacturer }) : t("OBD-II vehicle");
   const year = vin?.model_year ? ` · ${vin.model_year}` : "";
   return `${pack.brand} ${pack.model} (${pack.chassis})${year}`;
 }
 
 /** What the VIN itself says, decoded without a database. */
-function VinCard({ info }: { info: VinInfo }) {
+function VinCard({ info, t }: { info: VinInfo; t: T }) {
   const rows: [string, string][] = info.demo
     ? [
-        ["Manufacturer", "Practice car"],
-        ["Model year", "n/a"],
+        [t("Manufacturer"), t("Practice car")],
+        [t("Model year"), "n/a"],
       ]
     : [
-        ["Manufacturer", info.manufacturer ?? `Unknown (${info.wmi})`],
-        ["Built in", [info.country, info.region].filter(Boolean).join(", ")],
-        ["Model year", info.model_year ? String(info.model_year) : "Unknown"],
-        ["Plant code", info.plant ?? "-"],
-        ["Serial", info.serial || "-"],
+        [t("Manufacturer"), info.manufacturer ?? t("Unknown ({wmi})", { wmi: info.wmi })],
+        [t("Built in"), [info.country, info.region].filter(Boolean).map((x) => t(x as string)).join(", ")],
+        [t("Model year"), info.model_year ? String(info.model_year) : t("Unknown")],
+        [t("Plant code"), info.plant ?? "-"],
+        [t("Serial"), info.serial || "-"],
       ];
   const check =
     info.demo || info.check_digit_ok === null
       ? null
       : info.check_digit_ok
-        ? { ok: true, text: "Check digit valid" }
+        ? { ok: true, text: t("Check digit valid") }
         : info.check_digit_required
-          ? { ok: false, text: "Check digit does not match: the VIN may be misread or altered" }
-          : { ok: true, text: "Check digit not used by this maker" };
+          ? { ok: false, text: t("Check digit does not match: the VIN may be misread or altered") }
+          : { ok: true, text: t("Check digit not used by this maker") };
   return (
     <div className="mt-6 rounded-xl border border-white/[0.07] bg-black/20 p-4">
       <div className="mb-3 flex items-center justify-between">
-        <span className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">VIN decode</span>
+        <span className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">{t("VIN decode")}</span>
         {info.demo ? (
-          <Badge variant="warn">Demo VIN</Badge>
+          <Badge variant="warn">{t("Demo VIN")}</Badge>
         ) : (
           check && (
             <Badge variant={check.ok ? "ok" : "danger"}>
@@ -414,7 +419,7 @@ function VinCard({ info }: { info: VinInfo }) {
         {info.vin.split("").map((ch, i) => (
           <span
             key={i}
-            title={i < 3 ? "World manufacturer" : i < 8 ? "Vehicle description" : i === 8 ? "Check digit" : i === 9 ? "Model year" : i === 10 ? "Plant" : "Serial"}
+            title={t(i < 3 ? "World manufacturer" : i < 8 ? "Vehicle description" : i === 8 ? "Check digit" : i === 9 ? "Model year" : i === 10 ? "Plant" : "Serial")}
             className={cn(
               "px-[1px]",
               info.demo

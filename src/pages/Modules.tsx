@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { useDiag } from "@/lib/store";
+import { useT, Tr } from "@/lib/i18n";
 import { api, asCmdError, type ModuleDetail, type ModuleInfo, type ModuleScan } from "@/lib/tauri";
 import { SYSTEM_LABEL, hex } from "@/lib/format";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ import type { PageId } from "@/App";
 
 export default function Modules({ go }: { go: (p: PageId) => void }) {
   const { connection } = useDiag();
+  const t = useT();
   const [scan, setScan] = useState<ModuleScan[] | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -27,7 +29,7 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
         <PageHeader title="Modules" subtitle="Every control unit in the car, what it does, and its fault memory." />
         <Empty icon={Cpu} title="No car connected">
           <Button className="mt-4" onClick={() => go("connect")}>
-            <Plug /> Connect
+            <Plug /> <Tr>Connect</Tr>
           </Button>
         </Empty>
       </div>
@@ -59,7 +61,7 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
     <div>
       <PageHeader
         title="Modules"
-        subtitle={`The ${pack.brand} ${pack.model} (${pack.chassis}) has a control unit for each system. A scan asks every one whether it is fitted and how many faults it has stored.`}
+        subtitle={t("The {brand} {model} ({chassis}) has a control unit for each system. A scan asks every one whether it is fitted and how many faults it has stored.", { brand: pack.brand, model: pack.model, chassis: pack.chassis })}
         actions={
           <Button onClick={runScan} disabled={scanning}>
             {scanning ? <Loader2 className="animate-spin" /> : <ScanSearch />} {scan ? "Re-scan" : "Scan all modules"}

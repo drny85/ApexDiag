@@ -1972,6 +1972,7 @@ struct InspectionView {
 async fn inspection_finish(
     state: State<'_, AppState>,
     modules: Vec<ScannedModule>,
+    lang: Option<inspection::Lang>,
 ) -> CmdResult<InspectionView> {
     let mut inner = state.0.lock().await;
     let mut readings = inner
@@ -1993,7 +1994,7 @@ async fn inspection_finish(
         })
         .collect();
     readings.modules_not_scanned = pack.modules.len().saturating_sub(allowed.len());
-    let report = inspection::grade(&readings);
+    let report = inspection::grade(&readings, lang.unwrap_or_default());
     inner.record(
         "Inspection report",
         "Whole car",

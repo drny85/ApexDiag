@@ -27,6 +27,7 @@ jobs:
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run build
+      - run: bun run i18n:check
       - run: cargo build -p apexdiag
 
   # Windows readiness: the same app, Bluetooth LE through WinRT.
