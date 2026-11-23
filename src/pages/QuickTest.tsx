@@ -390,7 +390,7 @@ function Results({
           tone === "emerald" && "border-emerald-400/20 bg-gradient-to-br from-emerald-400/[0.08] to-transparent",
         )}
       >
-        <div className="pointer-events-none absolute -bottom-6 -right-6 hidden opacity-30 md:block">
+        <div className="pointer-events-none absolute -bottom-6 -right-6 hidden opacity-25 2xl:block">
           <CarSide body={pack.body} accent={STATUS_COLOR[r.overall]} className="w-[340px]" />
         </div>
         <div className="relative flex flex-col items-start gap-6 md:flex-row md:items-center">
