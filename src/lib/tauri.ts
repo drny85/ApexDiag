@@ -549,7 +549,7 @@ export const api = {
   deleteReplay: (id: string) => call<void>("delete_replay", { id }),
   simStumble: () => call<void>("sim_stumble"),
   inspectionStart: () => call<void>("inspection_start"),
-  inspectionFinish: (modules: { address: number; present: boolean; codes: InspectionCode[] }[]) =>
-    call<InspectionView>("inspection_finish", { modules }),
+  inspectionFinish: (modules: { address: number; present: boolean; codes: InspectionCode[] }[], lang: "en" | "es" = "en") =>
+    call<InspectionView>("inspection_finish", { modules, lang }),
   saveDocument: (name: string, contents: string) => call<string>("save_document", { name, contents }),
 };

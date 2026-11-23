@@ -22,6 +22,7 @@ import { useDiag, usePack } from "@/lib/store";
 import { api, asCmdError, type Comparison, type ModuleInfo, type RecordChange, type Snapshot } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import type { PageId } from "@/App";
+import { Tr } from "@/lib/i18n";
 
 const LIVE = "live";
 
@@ -100,7 +101,7 @@ export default function TimeMachine({ go }: { go: (p: PageId) => void }) {
           Snapshots are filed by VIN, so connect to see this car's history.
           <div>
             <Button className="mt-4" onClick={() => go("connect")}>
-              <Plug /> Connect
+              <Plug /> <Tr>Connect</Tr>
             </Button>
           </div>
         </Empty>

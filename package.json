@@ -9,7 +9,8 @@
     "preview": "vite preview",
     "typecheck": "tsc -b --noEmit",
     "tauri": "tauri",
-    "ios:install": "./scripts/ios-install.sh"
+    "ios:install": "./scripts/ios-install.sh",
+    "i18n:check": "bun scripts/i18n-check.ts"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.3.1",
