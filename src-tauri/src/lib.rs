@@ -5,12 +5,18 @@
 //! any safety requirement is not proven. Every attempt, allowed or blocked,
 //! is written to the activity log.
 
+mod timemachine;
+
 use protocol_core::bmw_e70::{self, JobStatus, Module};
 use protocol_core::catalog::{self, Function, Requirement, RiskTier, VehicleState};
 use protocol_core::obd2::{self, Dtc, MilStatus, PidInfo, Service};
+use protocol_core::snapshot::{
+    self, ModuleDiff, RecordDef, RecordValue, Snapshot, SnapshotFault, SnapshotKind,
+};
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tauri::State;
+use tauri::{Manager, State};
+use timemachine::SnapshotStore;
 use tokio::sync::Mutex;
 use transport::elm::{AdapterInfo, ClientError, ElmClient};
 use transport::sim::{self, ElmSimulator, SimEngine};
@@ -22,6 +28,7 @@ type Client = ElmClient<Box<dyn HardwareTransport + Send>>;
 struct Inner {
     client: Option<Client>,
     device: Option<DiscoveredDevice>,
+    vin: Option<String>,
     charger_confirmed: bool,
     log: Vec<LogEntry>,
 }
@@ -107,6 +114,7 @@ struct Catalog {
     functions: Vec<FunctionView>,
     pids: &'static [PidInfo],
     modules: &'static [Module],
+    records: &'static [RecordDef],
 }
 
 #[derive(Serialize)]
@@ -178,18 +186,49 @@ impl Inner {
             battery_v: battery,
             charger_confirmed: charger,
             wired_adapter: false,
-            // The simulator takes its backup automatically before a write.
-            backup_taken: simulated,
+            // The Time Machine backs up the target module right before every
+            // write, and gate() refuses the write if that backup fails.
+            backup_taken: true,
             job_verified,
         })
     }
 
     /// Refuses (and logs) when any requirement for `function_id` is unmet.
-    async fn gate(&mut self, function_id: &str, target: &str) -> CmdResult<&'static Function> {
+    /// When everything else is met, snapshots each module in `backup` to the
+    /// Time Machine; if a required backup fails, the write is refused.
+    async fn gate(
+        &mut self,
+        function_id: &str,
+        target: &str,
+        store: &SnapshotStore,
+        backup: &[&'static Module],
+    ) -> CmdResult<Gated> {
         let f = catalog::function(function_id)
             .ok_or_else(|| CmdError::new("unknown", format!("Unknown function {function_id}")))?;
         let state = self.vehicle_state(Some(function_id)).await?;
-        let unmet = f.unmet(&state);
+        let mut unmet = f.unmet(&state);
+        let mut snapshots = Vec::new();
+        if unmet.is_empty() && f.tier > RiskTier::Read {
+            let needs_backup = f.requires.contains(&Requirement::BackupTaken);
+            for m in backup {
+                let reason = format!("Before {}", f.name.to_lowercase());
+                match self.capture(m, SnapshotKind::Automatic, reason).await {
+                    Ok(s) if s.is_complete() || !needs_backup => match store.save(&s) {
+                        Ok(()) => snapshots.push(s),
+                        Err(_) if needs_backup => {
+                            unmet.push(Requirement::BackupTaken);
+                            break;
+                        }
+                        Err(_) => {}
+                    },
+                    _ if needs_backup => {
+                        unmet.push(Requirement::BackupTaken);
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+        }
         if !unmet.is_empty() {
             let reasons: Vec<String> = unmet.iter().map(|r| r.explain()).collect();
             self.record(
@@ -205,8 +244,108 @@ impl Inner {
                 unmet: unmet.into_iter().map(Into::into).collect(),
             });
         }
-        Ok(f)
+        Ok(Gated {
+            function: f,
+            snapshots,
+        })
     }
+
+    /// Reads one module's identification, fault memory and records.
+    async fn capture(
+        &mut self,
+        module: &'static Module,
+        kind: SnapshotKind,
+        reason: String,
+    ) -> CmdResult<Snapshot> {
+        let simulated = self.simulated();
+        let vin = self.vin.clone().unwrap_or_else(|| "UNKNOWN".into());
+        let c = self.client()?;
+        let identification = c.read_module_identification(module).await.ok();
+        let faults = c
+            .read_module_dtcs(module)
+            .await?
+            .into_iter()
+            .map(|d| SnapshotFault {
+                code: d.code,
+                status: d.status,
+            })
+            .collect();
+        let mut records = Vec::new();
+        let mut missing = Vec::new();
+        // Unverified identifiers are only ever sent to the demo car.
+        for d in bmw_e70::records_for(module.address)
+            .filter(|d| simulated || d.status == JobStatus::Verified)
+        {
+            match c.read_record(module, d.lid).await {
+                Ok(raw) if raw.len() == d.len() => records.push(RecordValue { lid: d.lid, raw }),
+                _ => missing.push(d.lid),
+            }
+        }
+        let at = now_ms() as u64;
+        Ok(Snapshot {
+            id: Snapshot::make_id(at, module.address),
+            vin,
+            module_address: module.address,
+            module_name: module.name.into(),
+            taken_at_ms: at,
+            kind,
+            reason,
+            simulated,
+            identification,
+            records,
+            faults,
+            missing,
+        })
+    }
+
+    fn vin(&self) -> CmdResult<String> {
+        self.vin.clone().ok_or_else(|| {
+            CmdError::new(
+                "no_vin",
+                "The car's VIN could not be read, so snapshots can't be filed.",
+            )
+        })
+    }
+}
+
+/// A gate that passed, with the backups it took.
+struct Gated {
+    function: &'static Function,
+    snapshots: Vec<Snapshot>,
+}
+
+impl Gated {
+    fn backup_step(&self) -> Option<String> {
+        match self.snapshots.as_slice() {
+            [] => None,
+            s => Some(format!(
+                "Backed up {} to the Time Machine",
+                s.iter()
+                    .map(|s| s.module_name.as_str())
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )),
+        }
+    }
+}
+
+/// Modules a special function writes to, which get backed up first.
+fn function_targets(function_id: &str) -> Vec<&'static Module> {
+    let mut out: Vec<&'static Module> = bmw_e70::JOBS
+        .iter()
+        .filter(|j| j.function_id == function_id)
+        .filter_map(|j| bmw_e70::module_at(j.module.address))
+        .collect();
+    out.dedup_by_key(|m| m.address);
+    if out.is_empty() {
+        out.extend(match function_id {
+            "actuator_test" | "flash" => Some(&bmw_e70::DME),
+            "coding" => Some(&bmw_e70::FRM),
+            "key_programming" => Some(&bmw_e70::CAS),
+            _ => None,
+        });
+    }
+    out
 }
 
 /// True when every job behind a function has verified request bytes.
@@ -260,6 +399,7 @@ fn catalog() -> Catalog {
         functions,
         pids: obd2::PIDS,
         modules: bmw_e70::MODULES,
+        records: bmw_e70::RECORDS,
     }
 }
 
@@ -304,7 +444,11 @@ struct ConnectReport {
 }
 
 #[tauri::command]
-async fn connect(state: State<'_, AppState>, id: String) -> CmdResult<ConnectReport> {
+async fn connect(
+    state: State<'_, AppState>,
+    store: State<'_, SnapshotStore>,
+    id: String,
+) -> CmdResult<ConnectReport> {
     let device = list_devices()
         .into_iter()
         .find(|d| d.id == id)
@@ -342,7 +486,13 @@ async fn connect(state: State<'_, AppState>, id: String) -> CmdResult<ConnectRep
         .map(|s| s.log.clone())
         .unwrap_or_default();
     let simulated = matches!(device.transport, TransportKind::Simulator { .. });
+    if simulated {
+        if let Some(v) = &vin {
+            let _ = timemachine::seed_demo_history(&store, v, now_ms() as u64);
+        }
+    }
     inner.client = Some(client);
+    inner.vin = vin.clone();
     inner.device = Some(device.clone());
     inner.charger_confirmed = false;
     let target = vin.clone().unwrap_or_else(|| "vehicle".into());
@@ -379,6 +529,7 @@ async fn disconnect(state: State<'_, AppState>) -> CmdResult<()> {
         );
     }
     inner.device = None;
+    inner.vin = None;
     Ok(())
 }
 
@@ -518,9 +669,14 @@ async fn read_obd_codes(state: State<'_, AppState>) -> CmdResult<ObdCodes> {
 }
 
 #[tauri::command]
-async fn clear_obd_codes(state: State<'_, AppState>) -> CmdResult<Vec<Dtc>> {
+async fn clear_obd_codes(
+    state: State<'_, AppState>,
+    store: State<'_, SnapshotStore>,
+) -> CmdResult<Vec<Dtc>> {
     let mut inner = state.0.lock().await;
-    inner.gate("clear_codes", "Engine (OBD-II)").await?;
+    inner
+        .gate("clear_codes", "Engine (OBD-II)", &store, &[&bmw_e70::DME])
+        .await?;
     let c = inner.client()?;
     // Save what we are about to erase.
     let mut saved = c.read_obd_dtcs(Service::StoredDtcs).await?;
@@ -638,10 +794,16 @@ async fn read_module(state: State<'_, AppState>, address: u8) -> CmdResult<Modul
 }
 
 #[tauri::command]
-async fn clear_module_codes(state: State<'_, AppState>, address: u8) -> CmdResult<()> {
+async fn clear_module_codes(
+    state: State<'_, AppState>,
+    store: State<'_, SnapshotStore>,
+    address: u8,
+) -> CmdResult<()> {
     let module = module_by_address(address)?;
     let mut inner = state.0.lock().await;
-    inner.gate("clear_codes", module.name).await?;
+    inner
+        .gate("clear_codes", module.name, &store, &[module])
+        .await?;
     let c = inner.client()?;
     let saved = c.read_module_dtcs(module).await?;
     c.bmw(
@@ -660,7 +822,7 @@ async fn clear_module_codes(state: State<'_, AppState>, address: u8) -> CmdResul
             if codes.is_empty() {
                 "nothing".into()
             } else {
-                codes.join(", ")
+                format!("{} (kept in the Time Machine)", codes.join(", "))
             }
         ),
     );
@@ -676,10 +838,22 @@ struct FunctionRun {
 }
 
 #[tauri::command]
-async fn run_function(state: State<'_, AppState>, id: String) -> CmdResult<FunctionRun> {
+async fn run_function(
+    state: State<'_, AppState>,
+    store: State<'_, SnapshotStore>,
+    id: String,
+) -> CmdResult<FunctionRun> {
+    if id == "snapshot_restore" {
+        return Err(CmdError::new(
+            "unavailable",
+            "Restore coding from the Time Machine, where you pick the snapshot.",
+        ));
+    }
     let mut inner = state.0.lock().await;
     let simulated = inner.simulated();
-    let f = inner.gate(&id, "vehicle").await?;
+    let targets = function_targets(&id);
+    let gated = inner.gate(&id, "vehicle", &store, &targets).await?;
+    let f = gated.function;
     if !simulated {
         // Real-car payloads are not verified yet; gate() already refused,
         // but be explicit in case the catalog changes.
@@ -689,8 +863,14 @@ async fn run_function(state: State<'_, AppState>, id: String) -> CmdResult<Funct
         ));
     }
     let mut steps = vec!["Safety checks passed".to_string()];
-    if f.tier >= RiskTier::Code {
-        steps.push("Backed up module data".into());
+    steps.extend(gated.backup_step());
+    // What the routine changes inside the demo car.
+    if let Some(sim) = inner.client()?.link_mut().simulator() {
+        match f.id {
+            "dme_adaptation_reset" => sim.reset_adaptations(bmw_e70::DME.address),
+            "egs_adaptation_reset" => sim.reset_adaptations(bmw_e70::EGS.address),
+            _ => {}
+        }
     }
     steps.extend(
         match f.id {
@@ -745,6 +925,203 @@ async fn run_function(state: State<'_, AppState>, id: String) -> CmdResult<Funct
     Ok(FunctionRun { simulated, steps })
 }
 
+// ---- commands: Time Machine -------------------------------------------
+
+/// Every saved snapshot for the connected car, newest first.
+#[tauri::command]
+async fn list_snapshots(
+    state: State<'_, AppState>,
+    store: State<'_, SnapshotStore>,
+) -> CmdResult<Vec<Snapshot>> {
+    let inner = state.0.lock().await;
+    let vin = inner.vin()?;
+    Ok(store.list(&vin))
+}
+
+/// Reads a module now and saves it as a manual snapshot.
+#[tauri::command]
+async fn take_snapshot(
+    state: State<'_, AppState>,
+    store: State<'_, SnapshotStore>,
+    address: u8,
+) -> CmdResult<Snapshot> {
+    let module = module_by_address(address)?;
+    let mut inner = state.0.lock().await;
+    inner.vin()?;
+    let s = inner
+        .capture(module, SnapshotKind::Manual, "Taken by hand".into())
+        .await?;
+    store
+        .save(&s)
+        .map_err(|e| CmdError::new("storage", format!("Could not save the snapshot: {e}")))?;
+    inner.record(
+        "Take snapshot",
+        module.name,
+        RiskTier::Read,
+        true,
+        format!("{} records, {} faults", s.records.len(), s.faults.len()),
+    );
+    Ok(s)
+}
+
+/// `"live"` means: read the module right now (not saved).
+const LIVE: &str = "live";
+
+#[derive(Serialize)]
+struct Comparison {
+    from: Snapshot,
+    to: Snapshot,
+    diff: ModuleDiff,
+}
+
+async fn load_or_read(
+    inner: &mut Inner,
+    store: &SnapshotStore,
+    module: &'static Module,
+    id: &str,
+) -> CmdResult<Snapshot> {
+    if id == LIVE {
+        let mut s = inner
+            .capture(module, SnapshotKind::Manual, "Now".into())
+            .await?;
+        s.id = LIVE.into();
+        return Ok(s);
+    }
+    let vin = inner.vin()?;
+    store
+        .get(&vin, id)
+        .filter(|s| s.module_address == module.address)
+        .ok_or_else(|| CmdError::new("not_found", "That snapshot no longer exists."))
+}
+
+#[tauri::command]
+async fn compare_snapshots(
+    state: State<'_, AppState>,
+    store: State<'_, SnapshotStore>,
+    address: u8,
+    from: String,
+    to: String,
+) -> CmdResult<Comparison> {
+    let module = module_by_address(address)?;
+    let mut inner = state.0.lock().await;
+    let from = load_or_read(&mut inner, &store, module, &from).await?;
+    let to = load_or_read(&mut inner, &store, module, &to).await?;
+    let diff = snapshot::diff(&from, &to, bmw_e70::RECORDS);
+    Ok(Comparison { from, to, diff })
+}
+
+#[derive(Serialize)]
+struct RestoreReport {
+    steps: Vec<String>,
+    written: usize,
+    /// Snapshot taken just before the restore, to undo it.
+    undo_id: Option<String>,
+}
+
+/// Writes a module's coding back to a saved snapshot, behind the full
+/// coding gate. Each write is read back to confirm it.
+#[tauri::command]
+async fn restore_snapshot(
+    state: State<'_, AppState>,
+    store: State<'_, SnapshotStore>,
+    address: u8,
+    id: String,
+) -> CmdResult<RestoreReport> {
+    let module = module_by_address(address)?;
+    let mut inner = state.0.lock().await;
+    let vin = inner.vin()?;
+    let target = store
+        .get(&vin, &id)
+        .filter(|s| s.module_address == address)
+        .ok_or_else(|| CmdError::new("not_found", "That snapshot no longer exists."))?;
+    let gated = inner
+        .gate("snapshot_restore", module.name, &store, &[module])
+        .await?;
+    let before = gated
+        .snapshots
+        .first()
+        .cloned()
+        .ok_or_else(|| CmdError::new("backup", "The safety backup was not taken."))?;
+    let plan = snapshot::restore_plan(&before, &target, bmw_e70::RECORDS);
+    let mut steps = vec!["Safety checks passed".to_string()];
+    steps.extend(gated.backup_step());
+    let undo_id = Some(before.id.clone());
+    if plan.is_empty() {
+        steps.push("Nothing to write: the coding already matches this snapshot".into());
+        inner.record(
+            "Restore module coding",
+            module.name,
+            RiskTier::Code,
+            true,
+            "Already matched, nothing written",
+        );
+        return Ok(RestoreReport {
+            steps,
+            written: 0,
+            undo_id,
+        });
+    }
+    let c = inner.client()?;
+    let mut done = 0;
+    let mut failure = None;
+    for w in &plan {
+        let result = async {
+            c.write_record(module, w.lid, &w.raw).await?;
+            let back = c.read_record(module, w.lid).await?;
+            Ok::<bool, ClientError>(back == w.raw)
+        }
+        .await;
+        match result {
+            Ok(true) => {
+                done += 1;
+                steps.push(format!("{}: {} → {} (read back OK)", w.name, w.from, w.to));
+            }
+            Ok(false) => {
+                failure = Some(format!("{} did not read back as written", w.name));
+                break;
+            }
+            Err(e) => {
+                failure = Some(format!("{}: {}", w.name, CmdError::from(e).message));
+                break;
+            }
+        }
+    }
+    if let Some(why) = failure {
+        inner.record(
+            "Restore module coding",
+            module.name,
+            RiskTier::Code,
+            false,
+            format!("Stopped after {done} of {} writes: {why}", plan.len()),
+        );
+        return Err(CmdError::new(
+            "restore_failed",
+            format!(
+                "Restore stopped after {done} of {} settings: {why}. The module's earlier coding is saved in the Time Machine as \"{}\".",
+                plan.len(),
+                before.reason
+            ),
+        ));
+    }
+    steps.push(format!(
+        "Restored {done} setting{} to {}",
+        if done == 1 { "" } else { "s" },
+        target.reason.to_lowercase()
+    ));
+    inner.record(
+        "Restore module coding",
+        module.name,
+        RiskTier::Code,
+        true,
+        format!("Wrote {done} settings from snapshot {}", target.id),
+    );
+    Ok(RestoreReport {
+        steps,
+        written: done,
+        undo_id,
+    })
+}
+
 #[tauri::command]
 async fn activity_log(state: State<'_, AppState>) -> CmdResult<Vec<serde_json::Value>> {
     let inner = state.0.lock().await;
@@ -760,6 +1137,15 @@ async fn activity_log(state: State<'_, AppState>) -> CmdResult<Vec<serde_json::V
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState::default())
+        .setup(|app| {
+            let dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::env::temp_dir().join("ApexDiag"))
+                .join("snapshots");
+            app.manage(SnapshotStore::new(dir));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             catalog,
             list_devices,
@@ -775,6 +1161,10 @@ pub fn run() {
             read_module,
             clear_module_codes,
             run_function,
+            list_snapshots,
+            take_snapshot,
+            compare_snapshots,
+            restore_snapshot,
             activity_log,
         ])
         .run(tauri::generate_context!())

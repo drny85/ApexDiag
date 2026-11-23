@@ -88,7 +88,7 @@ impl Requirement {
             Self::BatteryAtLeast { volts } => format!("Battery at {volts:.1} V or higher."),
             Self::ChargerConnected => "A battery charger or power supply is connected.".into(),
             Self::WiredAdapter => "A wired adapter is in use. Bluetooth can drop mid-write.".into(),
-            Self::BackupTaken => "The module's current data has been backed up.".into(),
+            Self::BackupTaken => "The module is backed up to the Time Machine right before the write. If the backup fails, nothing is written.".into(),
             Self::JobVerified => "This routine's commands have been verified for this car.".into(),
         }
     }
@@ -255,6 +255,16 @@ pub const FUNCTIONS: &[Function] = &[
         why: "Turn factory features on or off, or code a replacement module to this car.",
         risks: "Wrong values can disable features or cause warnings. If the battery runs low mid-write the module can be left half-coded.",
         undo: "Restore the backup the app takes before every write.",
+        requires: &[Stationary, EngineOff, BATTERY_OK, BackupTaken, JobVerified],
+    },
+    Function {
+        id: "snapshot_restore",
+        name: "Restore module coding",
+        tier: RiskTier::Code,
+        what: "Writes a module's coding back to how it was in an earlier Time Machine snapshot. Only settings that differ are written, then each one is read back to check it.",
+        why: "Undo a coding change that went wrong, or put back settings a shop changed.",
+        risks: "Same as coding: wrong values can disable features or cause warnings, and a flat battery mid-write can leave the module half-coded. Learned values and fault memory are not restored; the car relearns those by itself.",
+        undo: "The current coding is snapshotted first, so a restore can itself be undone from the Time Machine.",
         requires: &[Stationary, EngineOff, BATTERY_OK, BackupTaken, JobVerified],
     },
     Function {

@@ -63,11 +63,73 @@ export interface ModuleInfo {
   system: SystemId;
 }
 
+export type RecordKind = "coding" | "adaptation";
+
+export interface RecordDef {
+  module: number;
+  lid: number;
+  name: string;
+  kind: RecordKind;
+  explain: string;
+  status: "verified" | "pending_capture";
+}
+
 export interface Catalog {
   tiers: Tier[];
   functions: FunctionInfo[];
   pids: PidInfo[];
   modules: ModuleInfo[];
+  records: RecordDef[];
+}
+
+export type SnapshotKind = "manual" | "automatic" | "demo";
+
+export interface Snapshot {
+  id: string;
+  vin: string;
+  module_address: number;
+  module_name: string;
+  taken_at_ms: number;
+  kind: SnapshotKind;
+  reason: string;
+  simulated: boolean;
+  identification: string | null;
+  records: { lid: number; raw: number[] }[];
+  faults: { code: string; status: number }[];
+  missing: number[];
+}
+
+export interface RecordChange {
+  lid: number;
+  name: string;
+  kind: RecordKind;
+  explain: string;
+  before: string | null;
+  after: string | null;
+  before_value: number | null;
+  after_value: number | null;
+  delta: number | null;
+  changed: boolean;
+}
+
+export interface ModuleDiff {
+  records: RecordChange[];
+  faults: { appeared: string[]; gone: string[]; unchanged: string[] };
+  identification_changed: boolean;
+  restorable: number;
+  changed: number;
+}
+
+export interface Comparison {
+  from: Snapshot;
+  to: Snapshot;
+  diff: ModuleDiff;
+}
+
+export interface RestoreReport {
+  steps: string[];
+  written: number;
+  undo_id: string | null;
 }
 
 export interface AdapterInfo {
@@ -195,5 +257,9 @@ export const api = {
   readModule: (address: number) => call<ModuleDetail>("read_module", { address }),
   clearModuleCodes: (address: number) => call<void>("clear_module_codes", { address }),
   runFunction: (id: string) => call<FunctionRun>("run_function", { id }),
+  listSnapshots: () => call<Snapshot[]>("list_snapshots"),
+  takeSnapshot: (address: number) => call<Snapshot>("take_snapshot", { address }),
+  compareSnapshots: (address: number, from: string, to: string) => call<Comparison>("compare_snapshots", { address, from, to }),
+  restoreSnapshot: (address: number, id: string) => call<RestoreReport>("restore_snapshot", { address, id }),
   activityLog: () => call<LogEntry[]>("activity_log"),
 };

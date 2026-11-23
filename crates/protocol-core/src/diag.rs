@@ -39,6 +39,8 @@ pub mod sid {
     pub const KWP_IO_CONTROL_BY_LOCAL_ID: u8 = 0x30;
     /// KWP2000 StartRoutineByLocalIdentifier / UDS RoutineControl.
     pub const ROUTINE_CONTROL: u8 = 0x31;
+    /// KWP2000 WriteDataByLocalIdentifier.
+    pub const KWP_WRITE_DATA_BY_LOCAL_ID: u8 = 0x3B;
     pub const TESTER_PRESENT: u8 = 0x3E;
     pub const NEGATIVE_RESPONSE: u8 = 0x7F;
 }
@@ -187,6 +189,18 @@ pub mod request {
     pub fn read_data_by_identifier(did: u16) -> Vec<u8> {
         let [hi, lo] = did.to_be_bytes();
         vec![sid::READ_DATA_BY_IDENTIFIER, hi, lo]
+    }
+
+    /// KWP2000 ReadDataByLocalIdentifier: `21 lid`.
+    pub fn kwp_read_local_id(lid: u8) -> Vec<u8> {
+        vec![sid::KWP_READ_DATA_BY_LOCAL_ID, lid]
+    }
+
+    /// KWP2000 WriteDataByLocalIdentifier: `3B lid data…`.
+    pub fn kwp_write_local_id(lid: u8, data: &[u8]) -> Vec<u8> {
+        let mut r = vec![sid::KWP_WRITE_DATA_BY_LOCAL_ID, lid];
+        r.extend_from_slice(data);
+        r
     }
 
     /// KWP2000 ReadECUIdentification, `1A 80` = full identification table.

@@ -10,6 +10,7 @@ use crate::{HardwareTransport, Result, TransportError};
 use async_trait::async_trait;
 use protocol_core::bmw_e70;
 use protocol_core::isotp::{segment, Addressing, FlowControl, Segmented};
+use protocol_core::snapshot::RecordKind;
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
@@ -50,6 +51,8 @@ pub struct ElmSimulator {
     permanent: Vec<[u8; 2]>,
     /// Module address -> fault memory entries `[hi, lo, status]`.
     faults: BTreeMap<u8, Vec<[u8; 3]>>,
+    /// (module address, local id) -> raw record value, for the Time Machine.
+    records: BTreeMap<(u8, u8), Vec<u8>>,
     /// Requests seen, for tests.
     pub log: Vec<String>,
 }
@@ -95,8 +98,37 @@ impl ElmSimulator {
             pending: vec![[0x03, 0x00]],
             permanent: vec![],
             faults,
+            records: initial_records(),
             log: Vec::new(),
         }
+    }
+
+    /// A record's current raw value.
+    pub fn record(&self, address: u8, lid: u8) -> Option<&[u8]> {
+        self.records.get(&(address, lid)).map(Vec::as_slice)
+    }
+
+    /// What a successful adaptation reset does: the learned values go back
+    /// to zero and the module starts relearning.
+    pub fn reset_adaptations(&mut self, address: u8) {
+        for def in bmw_e70::records_for(address) {
+            if def.kind == RecordKind::Adaptation {
+                if let Some(v) = self.records.get_mut(&(address, def.lid)) {
+                    v.iter_mut().for_each(|b| *b = 0);
+                }
+            }
+        }
+    }
+
+    /// Learned long-term fuel trim for a bank, in percent.
+    fn ltft(&self, lid: u8) -> f64 {
+        self.record(bmw_e70::DME.address, lid)
+            .and_then(|raw| {
+                bmw_e70::records_for(bmw_e70::DME.address)
+                    .find(|d| d.lid == lid)
+                    .and_then(|d| d.number(raw))
+            })
+            .unwrap_or(0.0)
     }
 
     pub fn set_engine(&mut self, engine: SimEngine) {
@@ -165,6 +197,7 @@ impl ElmSimulator {
                     pending: std::mem::take(&mut self.pending),
                     permanent: std::mem::take(&mut self.permanent),
                     faults: std::mem::take(&mut self.faults),
+                    records: std::mem::take(&mut self.records),
                     log: std::mem::take(&mut self.log),
                     ..Self::new(self.engine)
                 };
@@ -319,10 +352,26 @@ impl ElmSimulator {
                     / 100.0,
             ),
             0x05 => byte(coolant + 40.0),
-            0x06 => byte(128.0 + if run { 3.0 * (t * 2.1).sin() } else { 0.0 } * 1.28),
-            0x07 => byte(128.0 + 9.4 * 1.28),
-            0x08 => byte(128.0 + if run { 3.0 * (t * 1.9).cos() } else { 0.0 } * 1.28),
-            0x09 => byte(128.0 + 8.6 * 1.28),
+            // Short-term trims make up whatever the learned (long-term)
+            // trim no longer covers, so they jump after an adaptation reset.
+            0x06 => byte(
+                128.0
+                    + if run {
+                        3.0 * (t * 2.1).sin() + (SIM_LEAK_B1 - self.ltft(0x01)) * 0.8
+                    } else {
+                        0.0
+                    } * 1.28,
+            ),
+            0x07 => byte(128.0 + self.ltft(0x01) * 1.28),
+            0x08 => byte(
+                128.0
+                    + if run {
+                        3.0 * (t * 1.9).cos() + (SIM_LEAK_B2 - self.ltft(0x02)) * 0.8
+                    } else {
+                        0.0
+                    } * 1.28,
+            ),
+            0x09 => byte(128.0 + self.ltft(0x02) * 1.28),
             0x0B => byte(if run {
                 34.0 + 1.5 * (t * 1.1).sin()
             } else {
@@ -373,13 +422,50 @@ impl ElmSimulator {
     // ---- BMW KWP2000 --------------------------------------------------
 
     fn bmw(&mut self, target: u8, req: &[u8]) -> String {
-        let Some(entries) = self.faults.get_mut(&target) else {
+        if !self.faults.contains_key(&target) {
             return "NO DATA".into();
-        };
+        }
         let Some(&sid) = req.first() else {
             return "?".into();
         };
+        let running = self.running();
         let reply: Vec<u8> = match req {
+            [0x21, lid] => match self.records.get(&(target, *lid)) {
+                Some(v) => {
+                    let mut r = vec![0x61, *lid];
+                    r.extend_from_slice(v);
+                    r
+                }
+                None => vec![0x7F, sid, 0x31],
+            },
+            [0x3B, lid, data @ ..] => {
+                let def = bmw_e70::records_for(target).find(|d| d.lid == *lid);
+                match def {
+                    // Learned values cannot be written, only reset.
+                    Some(d) if d.kind != RecordKind::Coding => vec![0x7F, sid, 0x31],
+                    Some(d) if data.len() != d.len() => vec![0x7F, sid, 0x13],
+                    // Coding needs the engine off.
+                    Some(_) if running => vec![0x7F, sid, 0x22],
+                    Some(_) => {
+                        self.records.insert((target, *lid), data.to_vec());
+                        vec![0x7B, *lid]
+                    }
+                    None => vec![0x7F, sid, 0x31],
+                }
+            }
+            _ => self.bmw_fixed(target, req),
+        };
+        self.frames(
+            0x600 + target as u32,
+            &reply,
+            Addressing::Extended(bmw_e70::TESTER_ADDRESS),
+        )
+    }
+
+    fn bmw_fixed(&mut self, target: u8, req: &[u8]) -> Vec<u8> {
+        let sid = req[0];
+        let entries = self.faults.entry(target).or_default();
+        match req {
             [0x3E, ..] => vec![0x7E],
             [0x18, 0x02, 0xFF, 0xFF] => {
                 let mut r = vec![0x58, entries.len() as u8];
@@ -400,15 +486,10 @@ impl ElmSimulator {
                 r.extend_from_slice(format!("SIM {name} 0000000 HW01 SW01").as_bytes());
                 r
             }
-            // Anything that writes or actuates is refused by the simulator.
-            [0x27 | 0x2E | 0x2F | 0x30 | 0x31 | 0x3B, ..] => vec![0x7F, sid, 0x22],
+            // Anything else that writes or actuates is refused.
+            [0x27 | 0x2E | 0x2F | 0x30 | 0x31, ..] => vec![0x7F, sid, 0x22],
             _ => vec![0x7F, sid, 0x11],
-        };
-        self.frames(
-            0x600 + target as u32,
-            &reply,
-            Addressing::Extended(bmw_e70::TESTER_ADDRESS),
-        )
+        }
     }
 
     // ---- framing ------------------------------------------------------
@@ -443,6 +524,42 @@ impl ElmSimulator {
             .collect::<Vec<_>>()
             .join("\r")
     }
+}
+
+/// The demo car's underlying fuel error per bank (a small vacuum leak), in
+/// percent. Learned trims sit near this; short-term trims cover the rest.
+const SIM_LEAK_B1: f64 = 9.4;
+const SIM_LEAK_B2: f64 = 8.6;
+
+/// Today's values of the demo car's Time Machine records.
+fn initial_records() -> BTreeMap<(u8, u8), Vec<u8>> {
+    let (dme, egs, frm, cas, kombi) = (
+        bmw_e70::DME.address,
+        bmw_e70::EGS.address,
+        bmw_e70::FRM.address,
+        bmw_e70::CAS.address,
+        bmw_e70::KOMBI.address,
+    );
+    let w = |v: i16| v.to_be_bytes().to_vec();
+    BTreeMap::from([
+        ((dme, 0x01), w(940)),
+        ((dme, 0x02), w(860)),
+        ((dme, 0x03), w(18)),
+        ((dme, 0x04), w(-24)),
+        ((dme, 0x05), w(62)),
+        ((dme, 0x10), vec![210]),
+        ((dme, 0x11), vec![0x00]),
+        ((egs, 0x30), w(84)),
+        ((egs, 0x31), w(41)),
+        ((egs, 0x32), w(1843)),
+        ((frm, 0x20), vec![0x01]),
+        ((frm, 0x21), vec![5]),
+        ((frm, 0x22), vec![0x00]),
+        ((cas, 0x40), vec![0x01]),
+        ((cas, 0x41), vec![0x01]),
+        ((kombi, 0x50), vec![0x00]),
+        ((kombi, 0x51), vec![0x00]),
+    ])
 }
 
 fn dtc_reply(sid: u8, codes: &[[u8; 2]]) -> Vec<u8> {

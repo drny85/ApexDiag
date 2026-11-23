@@ -319,6 +319,26 @@ impl<T: HardwareTransport> ElmClient<T> {
     }
 
     /// Reads a module's identification block as printable text.
+    /// Reads one Time Machine record (`21 lid`).
+    pub async fn read_record(&mut self, module: &Module, lid: u8) -> Result<Vec<u8>> {
+        let data = self.bmw(module, &request::kwp_read_local_id(lid)).await?;
+        match data.split_first() {
+            Some((&echo, value)) if echo == lid => Ok(value.to_vec()),
+            _ => Err(ProtocolError::MalformedFrame("record reply for another id").into()),
+        }
+    }
+
+    /// Writes one coding record (`3B lid data`).
+    pub async fn write_record(&mut self, module: &Module, lid: u8, value: &[u8]) -> Result<()> {
+        let data = self
+            .bmw(module, &request::kwp_write_local_id(lid, value))
+            .await?;
+        match data.first() {
+            Some(&echo) if echo == lid => Ok(()),
+            _ => Err(ProtocolError::MalformedFrame("write reply for another id").into()),
+        }
+    }
+
     pub async fn read_module_identification(&mut self, module: &Module) -> Result<String> {
         let data = self
             .bmw(module, &request::kwp_read_identification())
@@ -462,5 +482,68 @@ mod tests {
             }
             other => panic!("unexpected {other:?}"),
         }
+    }
+
+    fn nrc_of(err: ClientError) -> u8 {
+        match err {
+            ClientError::Protocol(ProtocolError::NegativeResponse { nrc, .. }) => nrc,
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reads_and_writes_coding_records() {
+        let mut c = client(SimEngine::IgnitionOn).await;
+        // Daytime running lights, FRM.
+        assert_eq!(c.read_record(&bmw_e70::FRM, 0x20).await.unwrap(), vec![1]);
+        c.write_record(&bmw_e70::FRM, 0x20, &[0]).await.unwrap();
+        assert_eq!(c.read_record(&bmw_e70::FRM, 0x20).await.unwrap(), vec![0]);
+        // Two-byte adaptation.
+        assert_eq!(
+            c.read_record(&bmw_e70::DME, 0x01).await.unwrap(),
+            940i16.to_be_bytes().to_vec()
+        );
+    }
+
+    #[tokio::test]
+    async fn record_writes_follow_the_rules() {
+        let mut c = client(SimEngine::Idling).await;
+        // Coding with the engine running: conditionsNotCorrect.
+        let e = c.write_record(&bmw_e70::FRM, 0x20, &[0]).await.unwrap_err();
+        assert_eq!(nrc_of(e), 0x22);
+        c.link_mut().set_engine(SimEngine::IgnitionOn);
+        // Learned values cannot be written.
+        let e = c
+            .write_record(&bmw_e70::DME, 0x01, &[0, 0])
+            .await
+            .unwrap_err();
+        assert_eq!(nrc_of(e), 0x31);
+        // Wrong length.
+        let e = c
+            .write_record(&bmw_e70::FRM, 0x20, &[0, 0])
+            .await
+            .unwrap_err();
+        assert_eq!(nrc_of(e), 0x13);
+        // Unknown record.
+        let e = c.read_record(&bmw_e70::FRM, 0x7F).await.unwrap_err();
+        assert_eq!(nrc_of(e), 0x31);
+    }
+
+    #[tokio::test]
+    async fn adaptation_reset_moves_trims_from_long_to_short_term() {
+        let mut c = client(SimEngine::Idling).await;
+        let ltft = c.read_pid(0x07).await.unwrap();
+        assert!((ltft - 9.4).abs() < 1.0, "{ltft}");
+        c.link_mut().reset_adaptations(bmw_e70::DME.address);
+        assert_eq!(
+            c.read_record(&bmw_e70::DME, 0x01).await.unwrap(),
+            vec![0, 0]
+        );
+        let ltft = c.read_pid(0x07).await.unwrap();
+        let stft = c.read_pid(0x06).await.unwrap();
+        assert!(ltft.abs() < 1.0, "{ltft}");
+        assert!(stft > 3.0, "short-term covers the leak now: {stft}");
+        // Coding is untouched by an adaptation reset.
+        assert_eq!(c.read_record(&bmw_e70::DME, 0x10).await.unwrap(), vec![210]);
     }
 }
