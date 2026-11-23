@@ -5,7 +5,7 @@
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { BatteryMedium, Car, CheckCircle2, Droplet, Fuel, Gauge as GaugeIcon, Leaf, Lock, Moon, Play, Plug, Settings2, ShieldCheck, Square, Sun, Thermometer, Timer, TriangleAlert, Wind, X, type LucideIcon } from "lucide-react";
-import Car3D, { type CarLive, type Level } from "@/components/Car3D";
+import DriveCar3D, { type CarLive, type Level } from "@/components/DriveCar3D";
 import DriveDial from "@/components/DriveDial";
 import PageHeader from "@/components/PageHeader";
 import Empty from "@/components/Empty";
@@ -421,7 +421,7 @@ function DriveScreen({ onExit }: { onExit: () => void }) {
       {/* Dials and car */}
       <div className="relative grid min-h-0 flex-1 grid-cols-2 grid-rows-[1.1fr_1fr] gap-x-2 px-3 landscape:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)_minmax(0,1fr)] landscape:grid-rows-1 sm:px-6">
         {/* The road runs the full width behind the dials, fading out at the edges. */}
-        <Car3D
+        <DriveCar3D
           body={pack?.body ?? "sedan"}
           accent={accent}
           live={carLive}
