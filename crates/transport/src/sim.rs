@@ -1,28 +1,101 @@
-//! A simulated ELM327 plugged into a simulated E70 X5.
+//! A simulated ELM327 plugged into a simulated car.
 //!
 //! It answers the same text protocol a real adapter does, so the whole stack
 //! (client, parser, ISO-TP, UI) can be developed and tested without a car.
 //! Values move over time so gauges have something to show.
 //!
-//! Everything it reports is invented. The VIN is `SIMULATED0APEX001`.
+//! Four demo cars are available, one per vehicle pack: a BMW X5 (KWP2000
+//! with BMW extended addressing), a Mercedes-Benz GLE, a Toyota Camry and a
+//! Honda Accord (UDS on 11-bit CAN). Everything they report is invented, and
+//! every demo VIN starts with `SIMULATED`.
 
 use crate::{HardwareTransport, Result, TransportError};
 use async_trait::async_trait;
-use protocol_core::bmw_e70;
 use protocol_core::isotp::{segment, Addressing, FlowControl, Segmented};
+use protocol_core::packs::{honda_accord, mercedes_w167, toyota_xv70};
 use protocol_core::snapshot::RecordKind;
+use protocol_core::vehicle::{Link, Module, Pack, BMW_TESTER_ADDRESS, BMW_TESTER_ID};
+use protocol_core::{bmw_e70, CanId};
 use std::collections::{BTreeMap, VecDeque};
 use std::time::{Duration, Instant};
 
-pub const SIM_VIN: &str = "SIMULATED0APEX001";
+/// One of the simulator's demo cars.
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct SimCar {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// What is wrong with it, so the demo has a story.
+    pub story: &'static str,
+    pub vin: &'static str,
+    #[serde(skip)]
+    pub pack: &'static Pack,
+}
 
-/// Descriptions for the simulator's invented BMW fault entries. These are
-/// demo text, not real BMW fault meanings.
-pub fn sim_fault_text(address: u8, code: &str) -> Option<&'static str> {
-    Some(match (address, code) {
-        (0x12, "29F3") => "Demo: oil level sensor signal implausible",
-        (0x12, "2A82") => "Demo: intake VANOS solenoid, response too slow",
-        (0x29, "5E20") => "Demo: wheel speed sensor rear left, signal intermittent",
+pub const SIM_CARS: [SimCar; 4] = [
+    SimCar {
+        id: "bmw_x5",
+        label: "BMW X5 (E70)",
+        story: "Lean on both banks from a small vacuum leak, an oil level sensor fault and a wheel speed sensor that drops out.",
+        vin: "SIMULATED0APEX001",
+        pack: &bmw_e70::PACK,
+    },
+    SimCar {
+        id: "mercedes_gle",
+        label: "Mercedes-Benz GLE (W167)",
+        story: "Engine light off and emissions ready, but the air suspension logs a front left pressure loss.",
+        vin: "SIMULATED0GLE0002",
+        pack: &mercedes_w167::PACK,
+    },
+    SimCar {
+        id: "toyota_camry",
+        label: "Toyota Camry (XV70)",
+        story: "No stored codes, but three emissions monitors are incomplete: the codes were cleared recently.",
+        vin: "SIMULATED0CAM0003",
+        pack: &toyota_xv70::PACK,
+    },
+    SimCar {
+        id: "honda_accord",
+        label: "Honda Accord (10th gen)",
+        story: "Engine light on for catalyst efficiency, with a freeze frame from the moment it failed.",
+        vin: "SIMULATED0ACC0004",
+        pack: &honda_accord::PACK,
+    },
+];
+
+/// The default demo car's VIN (the BMW).
+pub const SIM_VIN: &str = SIM_CARS[0].vin;
+
+pub fn sim_car(id: &str) -> Option<&'static SimCar> {
+    SIM_CARS.iter().find(|c| c.id == id)
+}
+
+pub fn sim_car_by_vin(vin: &str) -> Option<&'static SimCar> {
+    SIM_CARS.iter().find(|c| c.vin == vin)
+}
+
+/// Descriptions for the simulator's invented module fault entries. These
+/// are demo text, not real manufacturer fault meanings.
+pub fn sim_fault_text(pack: &str, address: u8, code: &str) -> Option<&'static str> {
+    Some(match (pack, address, code) {
+        ("bmw_e70", 0x12, "29F3") => "Demo: oil level sensor signal implausible",
+        ("bmw_e70", 0x12, "2A82") => "Demo: intake VANOS solenoid, response too slow",
+        ("bmw_e70", 0x29, "5E20") => "Demo: wheel speed sensor rear left, signal intermittent",
+        ("mercedes_w167", 0x46, "C1525-64") => {
+            "Demo: front left air spring loses pressure while parked"
+        }
+        ("mercedes_w167", 0xE0, "P0016-00") => {
+            "Demo: crankshaft / camshaft position correlation, bank 1 (history)"
+        }
+        ("mercedes_w167", 0x56, "U0155-87") => {
+            "Demo: lost communication with the instrument cluster (history)"
+        }
+        ("toyota_xv70", 0xB0, "C1241-16") => "Demo: low battery voltage seen during a crank",
+        ("toyota_xv70", 0xD2, "B2785-00") => "Demo: smart key, ignition hold monitor (history)",
+        ("toyota_xv70", 0xE0, "P0171-00") => "Demo: system too lean, bank 1 (pending)",
+        ("honda_accord", 0xE0, "P0420-00") => "Demo: catalyst efficiency below threshold, bank 1",
+        ("honda_accord", 0x50, "U0301-00") => {
+            "Demo: camera software or aim mismatch after a windscreen change"
+        }
         _ => return None,
     })
 }
@@ -36,23 +109,61 @@ pub enum SimEngine {
     Idling,
 }
 
+/// Adapter settings, reset by `AT Z`.
+#[derive(Debug, Clone, Copy)]
+struct Adapter {
+    echo: bool,
+    headers: bool,
+    header_id: CanId,
+    cea: Option<u8>,
+}
+
+impl Default for Adapter {
+    fn default() -> Self {
+        Self {
+            echo: true,
+            headers: false,
+            header_id: 0x7DF,
+            cea: None,
+        }
+    }
+}
+
+/// Where the engine keeps its learned fuel trims.
+#[derive(Debug, Clone, Copy)]
+struct Trims {
+    module: u8,
+    bank1: u16,
+    bank2: Option<u16>,
+}
+
+/// The code that stored a freeze frame and the PID values it captured.
+type Freeze = ([u8; 2], BTreeMap<u8, Vec<u8>>);
+
 pub struct ElmSimulator {
     connected: bool,
     out: VecDeque<u8>,
     start: Instant,
     engine: SimEngine,
     charger: bool,
-    echo: bool,
-    headers: bool,
-    header_id: u32,
-    cea: Option<u8>,
+    adapter: Adapter,
+    car: &'static SimCar,
     stored: Vec<[u8; 2]>,
     pending: Vec<[u8; 2]>,
     permanent: Vec<[u8; 2]>,
-    /// Module address -> fault memory entries `[hi, lo, status]`.
-    faults: BTreeMap<u8, Vec<[u8; 3]>>,
-    /// (module address, local id) -> raw record value, for the Time Machine.
-    records: BTreeMap<(u8, u8), Vec<u8>>,
+    /// Readiness monitors (PID 01 bytes C and D): supported, incomplete.
+    monitors: (u8, u8),
+    /// Freeze frame 0: the code that set it and the captured PID values.
+    freeze: Option<Freeze>,
+    /// Module address -> fault memory entries (KWP `[hi lo status]`, UDS
+    /// `[hi mid lo status]`). Modules missing from the map are not fitted.
+    faults: BTreeMap<u8, Vec<Vec<u8>>>,
+    /// (module address, record id) -> raw value, for the Time Machine.
+    records: BTreeMap<(u8, u16), Vec<u8>>,
+    /// The underlying fuel error per bank, in percent. Learned trims sit
+    /// near it; short-term trims cover whatever is not learned.
+    leak: (f64, f64),
+    trims: Trims,
     /// Requests seen, for tests.
     pub log: Vec<String>,
 }
@@ -64,56 +175,223 @@ impl Default for ElmSimulator {
 }
 
 impl ElmSimulator {
+    /// The default demo car (BMW X5).
     pub fn new(engine: SimEngine) -> Self {
-        let mut faults = BTreeMap::new();
-        // Invented entries so the fault screens have content.
-        faults.insert(
-            bmw_e70::DME.address,
-            vec![[0x29, 0xF3, 0x24], [0x2A, 0x82, 0x20]],
-        );
-        faults.insert(bmw_e70::DSC.address, vec![[0x5E, 0x20, 0x24]]);
-        faults.insert(bmw_e70::FRM.address, vec![]);
-        for m in [
-            bmw_e70::JBE,
-            bmw_e70::ACSM,
-            bmw_e70::EGS,
-            bmw_e70::VGSG,
-            bmw_e70::CAS,
-            bmw_e70::KOMBI,
-            bmw_e70::IHKA,
-        ] {
-            faults.insert(m.address, vec![]);
-        }
-        Self {
+        Self::with_car(&SIM_CARS[0], engine)
+    }
+
+    pub fn with_car(car: &'static SimCar, engine: SimEngine) -> Self {
+        let mut sim = Self {
             connected: false,
             out: VecDeque::new(),
             start: Instant::now(),
             engine,
             charger: false,
-            echo: true,
-            headers: false,
-            header_id: 0x7DF,
-            cea: None,
-            stored: vec![[0x01, 0x71], [0x01, 0x74]],
-            pending: vec![[0x03, 0x00]],
+            adapter: Adapter::default(),
+            car,
+            stored: vec![],
+            pending: vec![],
             permanent: vec![],
-            faults,
-            records: initial_records(),
+            monitors: (0x65, 0x00),
+            freeze: None,
+            faults: BTreeMap::new(),
+            records: BTreeMap::new(),
+            leak: (0.0, 0.0),
+            trims: Trims {
+                module: 0,
+                bank1: 0,
+                bank2: None,
+            },
             log: Vec::new(),
+        };
+        sim.load_story();
+        sim
+    }
+
+    pub fn car(&self) -> &'static SimCar {
+        self.car
+    }
+
+    /// Fills in the demo car's faults, records and live-data quirks.
+    fn load_story(&mut self) {
+        let w = |v: i16| v.to_be_bytes().to_vec();
+        let kwp = |hi: u8, lo: u8, st: u8| vec![hi, lo, st];
+        let uds = |code: &str, ft: u8, st: u8| {
+            let [hi, lo] = sae(code);
+            vec![hi, lo, ft, st]
+        };
+        let fitted = |pack: &Pack, absent: &[u8]| {
+            pack.modules
+                .iter()
+                .filter(|m| !absent.contains(&m.address))
+                .map(|m| (m.address, Vec::new()))
+                .collect::<BTreeMap<u8, Vec<Vec<u8>>>>()
+        };
+        match self.car.id {
+            "mercedes_gle" => {
+                use mercedes_w167::*;
+                self.faults = fitted(&PACK, &[PTS.address]);
+                self.faults
+                    .insert(AIR.address, vec![uds("C1525", 0x64, 0x09)]);
+                self.faults
+                    .insert(ME.address, vec![uds("P0016", 0x00, 0x08)]);
+                self.faults
+                    .insert(HU.address, vec![uds("U0155", 0x87, 0x08)]);
+                self.records = BTreeMap::from([
+                    ((ME.address, 0x2A01), w(310)),
+                    ((ME.address, 0x2A02), w(280)),
+                    ((ME.address, 0x2A10), w(12)),
+                    ((VGS.address, 0x2B01), w(62)),
+                    ((VGS.address, 0x2B02), w(2210)),
+                    ((SAM_F.address, 0x2C01), vec![1]),
+                    ((SAM_F.address, 0x2C02), vec![1]),
+                    ((EZS.address, 0x2D01), vec![1]),
+                ]);
+                self.monitors = (0x65, 0x00);
+                self.leak = (3.1, 2.8);
+                self.trims = Trims {
+                    module: ME.address,
+                    bank1: 0x2A01,
+                    bank2: Some(0x2A02),
+                };
+            }
+            "toyota_camry" => {
+                use toyota_xv70::*;
+                self.faults = fitted(&PACK, &[]);
+                self.faults
+                    .insert(ABS.address, vec![uds("C1241", 0x16, 0x08)]);
+                self.faults
+                    .insert(SMART.address, vec![uds("B2785", 0x00, 0x08)]);
+                self.faults
+                    .insert(ECM.address, vec![uds("P0171", 0x00, 0x24)]);
+                self.pending = vec![sae("P0171")];
+                self.records = BTreeMap::from([
+                    ((ECM.address, 0x2101), w(420)),
+                    ((ECM.address, 0x2102), w(38)),
+                    ((BODY.address, 0x2201), vec![1]),
+                    ((BODY.address, 0x2202), vec![1]),
+                    ((BODY.address, 0x2203), vec![15]),
+                    ((METER.address, 0x2301), vec![1]),
+                ]);
+                // Catalyst, EVAP and O2 sensor monitors have not run yet.
+                self.monitors = (0x65, 0x25);
+                self.leak = (6.8, 0.0);
+                self.trims = Trims {
+                    module: ECM.address,
+                    bank1: 0x2101,
+                    bank2: None,
+                };
+            }
+            "honda_accord" => {
+                use honda_accord::*;
+                self.faults = fitted(&PACK, &[]);
+                self.faults
+                    .insert(PGM_FI.address, vec![uds("P0420", 0x00, 0x2F)]);
+                self.faults
+                    .insert(CAMERA.address, vec![uds("U0301", 0x00, 0x08)]);
+                self.stored = vec![sae("P0420")];
+                self.permanent = vec![sae("P0420")];
+                self.records = BTreeMap::from([
+                    ((PGM_FI.address, 0x2401), w(160)),
+                    ((PGM_FI.address, 0x2402), vec![1]),
+                    ((CVT.address, 0x2501), w(45)),
+                    ((MICU.address, 0x2601), vec![1]),
+                    ((MICU.address, 0x2602), vec![0]),
+                    ((MICU.address, 0x2603), vec![15]),
+                ]);
+                self.monitors = (0x65, 0x00);
+                self.freeze = Some((
+                    sae("P0420"),
+                    BTreeMap::from([
+                        (0x04, vec![97]),         // load 38 %
+                        (0x05, vec![131]),        // coolant 91 °C
+                        (0x06, vec![131]),        // STFT +2.3 %
+                        (0x07, vec![130]),        // LTFT +1.6 %
+                        (0x0B, vec![52]),         // MAP 52 kPa
+                        (0x0C, vec![0x23, 0x00]), // 2240 rpm
+                        (0x0D, vec![72]),         // 72 km/h
+                        (0x0F, vec![64]),         // intake 24 °C
+                        (0x11, vec![46]),         // throttle 18 %
+                    ]),
+                ));
+                self.leak = (1.6, 0.0);
+                self.trims = Trims {
+                    module: PGM_FI.address,
+                    bank1: 0x2401,
+                    bank2: None,
+                };
+            }
+            _ => {
+                use bmw_e70::*;
+                self.faults = fitted(&PACK, &[PDC.address, FZD.address]);
+                self.faults.insert(
+                    DME.address,
+                    vec![kwp(0x29, 0xF3, 0x24), kwp(0x2A, 0x82, 0x20)],
+                );
+                self.faults.insert(DSC.address, vec![kwp(0x5E, 0x20, 0x24)]);
+                self.stored = vec![sae("P0171"), sae("P0174")];
+                self.pending = vec![sae("P0300")];
+                self.records = BTreeMap::from([
+                    ((DME.address, 0x01), w(940)),
+                    ((DME.address, 0x02), w(860)),
+                    ((DME.address, 0x03), w(18)),
+                    ((DME.address, 0x04), w(-24)),
+                    ((DME.address, 0x05), w(62)),
+                    ((DME.address, 0x10), vec![210]),
+                    ((DME.address, 0x11), vec![0x00]),
+                    ((EGS.address, 0x30), w(84)),
+                    ((EGS.address, 0x31), w(41)),
+                    ((EGS.address, 0x32), w(1843)),
+                    ((FRM.address, 0x20), vec![0x01]),
+                    ((FRM.address, 0x21), vec![5]),
+                    ((FRM.address, 0x22), vec![0x00]),
+                    ((CAS.address, 0x40), vec![0x01]),
+                    ((CAS.address, 0x41), vec![0x01]),
+                    ((KOMBI.address, 0x50), vec![0x00]),
+                    ((KOMBI.address, 0x51), vec![0x00]),
+                ]);
+                // EVAP has not finished since the last clear.
+                self.monitors = (0x65, 0x04);
+                self.freeze = Some((
+                    sae("P0171"),
+                    BTreeMap::from([
+                        (0x04, vec![61]),         // load 24 %
+                        (0x05, vec![128]),        // coolant 88 °C
+                        (0x06, vec![136]),        // STFT +6.2 %
+                        (0x07, vec![140]),        // LTFT +9.4 %
+                        (0x0B, vec![33]),         // MAP 33 kPa
+                        (0x0C, vec![0x0B, 0x40]), // 720 rpm
+                        (0x0D, vec![0]),          // stationary
+                        (0x0F, vec![71]),         // intake 31 °C
+                        (0x11, vec![21]),         // throttle 8 %
+                    ]),
+                ));
+                self.leak = (9.4, 8.6);
+                self.trims = Trims {
+                    module: DME.address,
+                    bank1: 0x01,
+                    bank2: Some(0x02),
+                };
+            }
         }
     }
 
+    /// Every record's current raw value.
+    pub fn records(&self) -> Vec<((u8, u16), Vec<u8>)> {
+        self.records.iter().map(|(k, v)| (*k, v.clone())).collect()
+    }
+
     /// A record's current raw value.
-    pub fn record(&self, address: u8, lid: u8) -> Option<&[u8]> {
-        self.records.get(&(address, lid)).map(Vec::as_slice)
+    pub fn record(&self, address: u8, id: u16) -> Option<&[u8]> {
+        self.records.get(&(address, id)).map(Vec::as_slice)
     }
 
     /// What a successful adaptation reset does: the learned values go back
     /// to zero and the module starts relearning.
     pub fn reset_adaptations(&mut self, address: u8) {
-        for def in bmw_e70::records_for(address) {
+        for def in self.car.pack.records_for(address) {
             if def.kind == RecordKind::Adaptation {
-                if let Some(v) = self.records.get_mut(&(address, def.lid)) {
+                if let Some(v) = self.records.get_mut(&(address, def.id)) {
                     v.iter_mut().for_each(|b| *b = 0);
                 }
             }
@@ -121,14 +399,21 @@ impl ElmSimulator {
     }
 
     /// Learned long-term fuel trim for a bank, in percent.
-    fn ltft(&self, lid: u8) -> f64 {
-        self.record(bmw_e70::DME.address, lid)
-            .and_then(|raw| {
-                bmw_e70::records_for(bmw_e70::DME.address)
-                    .find(|d| d.lid == lid)
-                    .and_then(|d| d.number(raw))
-            })
-            .unwrap_or(0.0)
+    fn ltft(&self, bank: u8) -> f64 {
+        let id = if bank == 1 {
+            Some(self.trims.bank1)
+        } else {
+            self.trims.bank2
+        };
+        id.and_then(|id| {
+            let raw = self.record(self.trims.module, id)?;
+            self.car
+                .pack
+                .records_for(self.trims.module)
+                .find(|d| d.id == id)?
+                .number(raw)
+        })
+        .unwrap_or(0.0)
     }
 
     pub fn set_engine(&mut self, engine: SimEngine) {
@@ -163,6 +448,10 @@ impl ElmSimulator {
         self.engine == SimEngine::Idling
     }
 
+    fn two_banks(&self) -> bool {
+        self.trims.bank2.is_some()
+    }
+
     fn handle(&mut self, line: &str) -> String {
         let cmd = line.trim().to_ascii_uppercase();
         if self.log.len() >= 500 {
@@ -175,7 +464,7 @@ impl ElmSimulator {
             self.handle_request(&cmd)
         };
         let mut out = String::new();
-        if self.echo {
+        if self.adapter.echo {
             out.push_str(line.trim());
             out.push('\r');
         }
@@ -186,38 +475,28 @@ impl ElmSimulator {
 
     fn handle_at(&mut self, at: &str) -> String {
         let compact: String = at.chars().filter(|c| !c.is_whitespace()).collect();
+        let a = &mut self.adapter;
         match compact.as_str() {
             "Z" => {
-                *self = Self {
-                    connected: true,
-                    start: self.start,
-                    engine: self.engine,
-                    charger: self.charger,
-                    stored: std::mem::take(&mut self.stored),
-                    pending: std::mem::take(&mut self.pending),
-                    permanent: std::mem::take(&mut self.permanent),
-                    faults: std::mem::take(&mut self.faults),
-                    records: std::mem::take(&mut self.records),
-                    log: std::mem::take(&mut self.log),
-                    ..Self::new(self.engine)
-                };
+                *a = Adapter::default();
+                self.connected = true;
                 "\rELM327 v1.5".into()
             }
             "I" => "ELM327 v1.5".into(),
             "E0" => {
-                self.echo = false;
+                a.echo = false;
                 "OK".into()
             }
             "E1" => {
-                self.echo = true;
+                a.echo = true;
                 "OK".into()
             }
             "H1" => {
-                self.headers = true;
+                a.headers = true;
                 "OK".into()
             }
             "H0" => {
-                self.headers = false;
+                a.headers = false;
                 "OK".into()
             }
             "RV" => {
@@ -226,19 +505,19 @@ impl ElmSimulator {
             }
             "DP" => "ISO 15765-4 (CAN 11/500)".into(),
             "CEA" => {
-                self.cea = None;
+                a.cea = None;
                 "OK".into()
             }
             c if c.starts_with("CEA") => match u8::from_str_radix(&c[3..], 16) {
-                Ok(a) => {
-                    self.cea = Some(a);
+                Ok(x) => {
+                    a.cea = Some(x);
                     "OK".into()
                 }
                 Err(_) => "?".into(),
             },
-            c if c.starts_with("SH") => match u32::from_str_radix(&c[2..], 16) {
+            c if c.starts_with("SH") => match CanId::from_str_radix(&c[2..], 16) {
                 Ok(id) => {
-                    self.header_id = id;
+                    a.header_id = id;
                     "OK".into()
                 }
                 Err(_) => "?".into(),
@@ -270,39 +549,69 @@ impl ElmSimulator {
         else {
             return "?".into();
         };
-        match self.cea {
-            Some(target) if self.header_id == bmw_e70::TESTER_ID => self.bmw(target, &req),
+        let Adapter { header_id, cea, .. } = self.adapter;
+        let pack = self.car.pack;
+        match cea {
+            Some(target) if header_id == BMW_TESTER_ID => {
+                match pack.module(target).filter(|m| m.link == Link::BmwExtended) {
+                    Some(_) if self.faults.contains_key(&target) => self.kwp(target, &req),
+                    _ => "NO DATA".into(),
+                }
+            }
             Some(_) => "NO DATA".into(),
-            None => self.obd(&req),
+            None if header_id == 0x7DF => self.obd(&req),
+            None => {
+                let module = pack
+                    .modules
+                    .iter()
+                    .find(|m| matches!(m.link, Link::Can11 { .. }) && m.request_id() == header_id);
+                match module {
+                    Some(m) if self.faults.contains_key(&m.address) => {
+                        let reply = self.uds(m, &req);
+                        self.frames(m.response_id(), &reply, Addressing::Normal)
+                    }
+                    _ => "NO DATA".into(),
+                }
+            }
         }
     }
 
     // ---- OBD-II -------------------------------------------------------
 
-    fn obd(&mut self, req: &[u8]) -> String {
-        let reply = match req {
+    /// The engine module's reply to an OBD-II request.
+    fn obd_payload(&mut self, req: &[u8]) -> Option<Vec<u8>> {
+        match req {
             [0x01, pid] => self.pid(*pid).map(|data| {
                 let mut r = vec![0x41, *pid];
                 r.extend(data);
                 r
             }),
+            [0x02, pid, frame] => self.freeze_frame(*pid, *frame),
             [0x03] => Some(dtc_reply(0x43, &self.stored)),
             [0x07] => Some(dtc_reply(0x47, &self.pending)),
             [0x0A] => Some(dtc_reply(0x4A, &self.permanent)),
             [0x04] => {
+                // What a real car does on clear: codes and freeze frame go,
+                // and every supported monitor starts over. Permanent codes
+                // stay until the car proves the fault is fixed.
                 self.stored.clear();
                 self.pending.clear();
+                self.freeze = None;
+                self.monitors.1 = self.monitors.0;
                 Some(vec![0x44])
             }
             [0x09, 0x00] => Some(vec![0x49, 0x00, 0x54, 0x40, 0x00, 0x00]),
             [0x09, 0x02] => {
                 let mut r = vec![0x49, 0x02, 0x01];
-                r.extend_from_slice(SIM_VIN.as_bytes());
+                r.extend_from_slice(self.car.vin.as_bytes());
                 Some(r)
             }
             _ => None,
-        };
-        let Some(reply) = reply else {
+        }
+    }
+
+    fn obd(&mut self, req: &[u8]) -> String {
+        let Some(reply) = self.obd_payload(req) else {
             return "NO DATA".into();
         };
         let mut lines = self.frames(0x7E8, &reply, Addressing::Normal);
@@ -317,6 +626,21 @@ impl ElmSimulator {
             ));
         }
         lines
+    }
+
+    /// Service 02: values captured when the first emissions code set.
+    fn freeze_frame(&self, pid: u8, frame: u8) -> Option<Vec<u8>> {
+        if frame != 0 {
+            return None;
+        }
+        let mut r = vec![0x42, pid, frame];
+        match (&self.freeze, pid) {
+            (None, 0x02) => r.extend([0, 0]),
+            (None, _) => return None,
+            (Some((dtc, _)), 0x02) => r.extend(dtc),
+            (Some((_, values)), _) => r.extend(values.get(&pid)?),
+        }
+        Some(r)
     }
 
     /// Live values. Idle wobbles; engine-off reads 0 rpm.
@@ -335,11 +659,30 @@ impl ElmSimulator {
             v.to_be_bytes().to_vec()
         };
         let byte = |v: f64| vec![v.clamp(0.0, 255.0).round() as u8];
+        // Short-term trims make up whatever the learned (long-term) trim no
+        // longer covers, so they jump after an adaptation reset.
+        let stft = |wave: f64, leak: f64, bank: u8| {
+            byte(
+                128.0
+                    + if run {
+                        3.0 * wave + (leak - self.ltft(bank)) * 0.8
+                    } else {
+                        0.0
+                    } * 1.28,
+            )
+        };
         Some(match pid {
-            0x00 => vec![0xBF, 0xBF, 0xB8, 0x13],
+            // Single-bank engines do not support PIDs 08 and 09.
+            0x00 if self.two_banks() => vec![0xBF, 0xBF, 0xB8, 0x13],
+            0x00 => vec![0xBE, 0x3F, 0xB8, 0x13],
             0x01 => {
                 let mil = if self.stored.is_empty() { 0x00 } else { 0x80 };
-                vec![mil | self.stored.len() as u8, 0x07, 0x65, 0x04]
+                vec![
+                    mil | self.stored.len() as u8,
+                    0x07,
+                    self.monitors.0,
+                    self.monitors.1,
+                ]
             }
             0x20 => vec![0xA0, 0x07, 0xB0, 0x11],
             0x40 => vec![0xFE, 0xD0, 0x00, 0x10],
@@ -352,26 +695,10 @@ impl ElmSimulator {
                     / 100.0,
             ),
             0x05 => byte(coolant + 40.0),
-            // Short-term trims make up whatever the learned (long-term)
-            // trim no longer covers, so they jump after an adaptation reset.
-            0x06 => byte(
-                128.0
-                    + if run {
-                        3.0 * (t * 2.1).sin() + (SIM_LEAK_B1 - self.ltft(0x01)) * 0.8
-                    } else {
-                        0.0
-                    } * 1.28,
-            ),
-            0x07 => byte(128.0 + self.ltft(0x01) * 1.28),
-            0x08 => byte(
-                128.0
-                    + if run {
-                        3.0 * (t * 1.9).cos() + (SIM_LEAK_B2 - self.ltft(0x02)) * 0.8
-                    } else {
-                        0.0
-                    } * 1.28,
-            ),
-            0x09 => byte(128.0 + self.ltft(0x02) * 1.28),
+            0x06 => stft((t * 2.1).sin(), self.leak.0, 1),
+            0x07 => byte(128.0 + self.ltft(1) * 1.28),
+            0x08 if self.two_banks() => stft((t * 1.9).cos(), self.leak.1, 2),
+            0x09 if self.two_banks() => byte(128.0 + self.ltft(2) * 1.28),
             0x0B => byte(if run {
                 34.0 + 1.5 * (t * 1.1).sin()
             } else {
@@ -407,8 +734,13 @@ impl ElmSimulator {
             0x15 => vec![if run { 140 } else { 0 }, 0xFF],
             0x1F => word(if run { t } else { 0.0 }),
             0x21 => word(0.0),
+            // Distance since codes were cleared: short on the Camry.
+            0x31 => word(if self.monitors.1 == 0x25 {
+                38.0
+            } else {
+                1843.0
+            }),
             0x2F => byte(61.0 * 255.0 / 100.0),
-            0x31 => word(1843.0),
             0x33 => byte(101.0),
             0x3C => word((if run { 520.0 * warm + 20.0 } else { 20.0 } + 40.0) * 10.0),
             0x42 => word((self.volts() + (t * 0.7).sin() * 0.05) * 1000.0),
@@ -419,18 +751,44 @@ impl ElmSimulator {
         })
     }
 
+    // ---- writes shared by KWP2000 and UDS ------------------------------
+
+    /// Applies a record write with the rules a real module enforces.
+    /// Returns the negative response code on refusal.
+    fn write(&mut self, target: u8, id: u16, data: &[u8]) -> std::result::Result<(), u8> {
+        let def = self.car.pack.records_for(target).find(|d| d.id == id);
+        match def {
+            // Learned values cannot be written, only reset.
+            Some(d) if d.kind != RecordKind::Coding => Err(0x31),
+            Some(d) if data.len() != d.len() => Err(0x13),
+            // Coding needs the engine off.
+            Some(_) if self.running() => Err(0x22),
+            Some(_) => {
+                self.records.insert((target, id), data.to_vec());
+                Ok(())
+            }
+            None => Err(0x31),
+        }
+    }
+
+    fn identification(&self, target: u8) -> String {
+        let name = self
+            .car
+            .pack
+            .module(target)
+            .map(|m| m.name)
+            .unwrap_or("UNKNOWN");
+        format!("SIM {name} 0000000 HW01 SW01")
+    }
+
     // ---- BMW KWP2000 --------------------------------------------------
 
-    fn bmw(&mut self, target: u8, req: &[u8]) -> String {
-        if !self.faults.contains_key(&target) {
-            return "NO DATA".into();
-        }
+    fn kwp(&mut self, target: u8, req: &[u8]) -> String {
         let Some(&sid) = req.first() else {
             return "?".into();
         };
-        let running = self.running();
         let reply: Vec<u8> = match req {
-            [0x21, lid] => match self.records.get(&(target, *lid)) {
+            [0x21, lid] => match self.records.get(&(target, *lid as u16)) {
                 Some(v) => {
                     let mut r = vec![0x61, *lid];
                     r.extend_from_slice(v);
@@ -438,56 +796,88 @@ impl ElmSimulator {
                 }
                 None => vec![0x7F, sid, 0x31],
             },
-            [0x3B, lid, data @ ..] => {
-                let def = bmw_e70::records_for(target).find(|d| d.lid == *lid);
-                match def {
-                    // Learned values cannot be written, only reset.
-                    Some(d) if d.kind != RecordKind::Coding => vec![0x7F, sid, 0x31],
-                    Some(d) if data.len() != d.len() => vec![0x7F, sid, 0x13],
-                    // Coding needs the engine off.
-                    Some(_) if running => vec![0x7F, sid, 0x22],
-                    Some(_) => {
-                        self.records.insert((target, *lid), data.to_vec());
-                        vec![0x7B, *lid]
-                    }
-                    None => vec![0x7F, sid, 0x31],
-                }
-            }
-            _ => self.bmw_fixed(target, req),
-        };
-        self.frames(
-            0x600 + target as u32,
-            &reply,
-            Addressing::Extended(bmw_e70::TESTER_ADDRESS),
-        )
-    }
-
-    fn bmw_fixed(&mut self, target: u8, req: &[u8]) -> Vec<u8> {
-        let sid = req[0];
-        let entries = self.faults.entry(target).or_default();
-        match req {
+            [0x3B, lid, data @ ..] => match self.write(target, *lid as u16, data) {
+                Ok(()) => vec![0x7B, *lid],
+                Err(nrc) => vec![0x7F, sid, nrc],
+            },
             [0x3E, ..] => vec![0x7E],
             [0x18, 0x02, 0xFF, 0xFF] => {
+                let entries = &self.faults[&target];
                 let mut r = vec![0x58, entries.len() as u8];
-                for e in entries.iter() {
+                for e in entries {
                     r.extend_from_slice(e);
                 }
                 r
             }
             [0x14, 0xFF, 0xFF] => {
-                entries.clear();
+                self.faults.entry(target).or_default().clear();
                 vec![0x54, 0xFF, 0xFF]
             }
             [0x1A, 0x80] => {
-                let name = bmw_e70::module_at(target)
-                    .map(|m| m.name)
-                    .unwrap_or("UNKNOWN");
                 let mut r = vec![0x5A, 0x80];
-                r.extend_from_slice(format!("SIM {name} 0000000 HW01 SW01").as_bytes());
+                r.extend_from_slice(self.identification(target).as_bytes());
                 r
             }
             // Anything else that writes or actuates is refused.
             [0x27 | 0x2E | 0x2F | 0x30 | 0x31, ..] => vec![0x7F, sid, 0x22],
+            _ => vec![0x7F, sid, 0x11],
+        };
+        self.frames(
+            0x600 + target as CanId,
+            &reply,
+            Addressing::Extended(BMW_TESTER_ADDRESS),
+        )
+    }
+
+    // ---- UDS on 11-bit CAN ----------------------------------------------
+
+    fn uds(&mut self, module: &Module, req: &[u8]) -> Vec<u8> {
+        let target = module.address;
+        let Some(&sid) = req.first() else {
+            return vec![0x7F, 0x00, 0x13];
+        };
+        match req {
+            [0x10, session] => vec![0x50, *session, 0x00, 0x32, 0x01, 0xF4],
+            [0x3E, sub] => vec![0x7E, sub & 0x7F],
+            [0x19, 0x02, _mask] => {
+                let mut r = vec![0x59, 0x02, 0xFF];
+                for e in &self.faults[&target] {
+                    r.extend_from_slice(e);
+                }
+                r
+            }
+            [0x14, ..] => {
+                self.faults.entry(target).or_default().clear();
+                vec![0x54]
+            }
+            [0x22, hi, lo] => {
+                let did = u16::from_be_bytes([*hi, *lo]);
+                let value = match did {
+                    0xF187 => Some(format!("SIM-{}-0001", module.name).into_bytes()),
+                    0xF189 => Some(b"SW 01.02".to_vec()),
+                    0xF190 => Some(self.car.vin.as_bytes().to_vec()),
+                    _ => self.records.get(&(target, did)).cloned(),
+                };
+                match value {
+                    Some(v) => {
+                        let mut r = vec![0x62, *hi, *lo];
+                        r.extend(v);
+                        r
+                    }
+                    None => vec![0x7F, sid, 0x31],
+                }
+            }
+            [0x2E, hi, lo, data @ ..] => {
+                match self.write(target, u16::from_be_bytes([*hi, *lo]), data) {
+                    Ok(()) => vec![0x6E, *hi, *lo],
+                    Err(nrc) => vec![0x7F, sid, nrc],
+                }
+            }
+            // The engine module also answers OBD-II services on its own ID.
+            [0x01..=0x0A, ..] if module.is_obd_legislated() && module.request_id() == 0x7E0 => self
+                .obd_payload(req)
+                .unwrap_or_else(|| vec![0x7F, sid, 0x12]),
+            [0x27 | 0x2F | 0x31, ..] => vec![0x7F, sid, 0x22],
             _ => vec![0x7F, sid, 0x11],
         }
     }
@@ -496,7 +886,7 @@ impl ElmSimulator {
 
     /// Prints a reply the way an ELM327 with headers on does: one line per
     /// CAN frame, Flow Control already handled.
-    fn frames(&self, id: u32, payload: &[u8], addressing: Addressing) -> String {
+    fn frames(&self, id: CanId, payload: &[u8], addressing: Addressing) -> String {
         let frames = match segment(payload, addressing).expect("simulator reply fits ISO-TP") {
             Segmented::Single(f) => vec![f],
             Segmented::Multi { first, mut sender } => {
@@ -515,7 +905,7 @@ impl ElmSimulator {
                     .map(|b| format!("{b:02X}"))
                     .collect::<Vec<_>>()
                     .join(" ");
-                if self.headers {
+                if self.adapter.headers {
                     format!("{id:03X} {bytes}")
                 } else {
                     bytes
@@ -526,40 +916,20 @@ impl ElmSimulator {
     }
 }
 
-/// The demo car's underlying fuel error per bank (a small vacuum leak), in
-/// percent. Learned trims sit near this; short-term trims cover the rest.
-const SIM_LEAK_B1: f64 = 9.4;
-const SIM_LEAK_B2: f64 = 8.6;
-
-/// Today's values of the demo car's Time Machine records.
-fn initial_records() -> BTreeMap<(u8, u8), Vec<u8>> {
-    let (dme, egs, frm, cas, kombi) = (
-        bmw_e70::DME.address,
-        bmw_e70::EGS.address,
-        bmw_e70::FRM.address,
-        bmw_e70::CAS.address,
-        bmw_e70::KOMBI.address,
-    );
-    let w = |v: i16| v.to_be_bytes().to_vec();
-    BTreeMap::from([
-        ((dme, 0x01), w(940)),
-        ((dme, 0x02), w(860)),
-        ((dme, 0x03), w(18)),
-        ((dme, 0x04), w(-24)),
-        ((dme, 0x05), w(62)),
-        ((dme, 0x10), vec![210]),
-        ((dme, 0x11), vec![0x00]),
-        ((egs, 0x30), w(84)),
-        ((egs, 0x31), w(41)),
-        ((egs, 0x32), w(1843)),
-        ((frm, 0x20), vec![0x01]),
-        ((frm, 0x21), vec![5]),
-        ((frm, 0x22), vec![0x00]),
-        ((cas, 0x40), vec![0x01]),
-        ((cas, 0x41), vec![0x01]),
-        ((kombi, 0x50), vec![0x00]),
-        ((kombi, 0x51), vec![0x00]),
-    ])
+/// Two-byte SAE form of a code like `P0420` or `C1525`.
+fn sae(code: &str) -> [u8; 2] {
+    let b = code.as_bytes();
+    let group = match b[0] {
+        b'P' => 0,
+        b'C' => 1,
+        b'B' => 2,
+        _ => 3,
+    };
+    let digit = |i: usize| (b[i] as char).to_digit(16).unwrap_or(0) as u8;
+    [
+        group << 6 | digit(1) << 4 | digit(2),
+        digit(3) << 4 | digit(4),
+    ]
 }
 
 fn dtc_reply(sid: u8, codes: &[[u8; 2]]) -> Vec<u8> {
@@ -613,5 +983,39 @@ impl HardwareTransport for ElmSimulator {
         // Hand data back in BLE-sized chunks to exercise reassembly of text.
         let n = self.out.len().min(20);
         Ok(self.out.drain(..n).collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use protocol_core::obd2::decode_dtc;
+
+    #[test]
+    fn sae_round_trips() {
+        for code in ["P0171", "P0420", "C1525", "B2785", "U0155", "P0300"] {
+            let [hi, lo] = sae(code);
+            assert_eq!(decode_dtc(hi, lo), code);
+        }
+    }
+
+    #[test]
+    fn every_demo_car_has_a_pack_and_demo_vin() {
+        for car in &SIM_CARS {
+            assert!(car.vin.starts_with(protocol_core::vin::DEMO_PREFIX));
+            assert_eq!(car.vin.len(), 17);
+            let sim = ElmSimulator::with_car(car, SimEngine::Idling);
+            assert!(!sim.faults.is_empty(), "{}", car.id);
+            for (addr, id) in sim.records.keys() {
+                assert!(
+                    car.pack.records_for(*addr).any(|d| d.id == *id),
+                    "{}: record {addr:02X}/{id:04X} not in pack",
+                    car.id
+                );
+            }
+            for addr in sim.faults.keys() {
+                assert!(car.pack.module(*addr).is_some());
+            }
+        }
     }
 }

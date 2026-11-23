@@ -7,19 +7,20 @@
 
 mod timemachine;
 
-use protocol_core::bmw_e70::{self, JobStatus, Module};
 use protocol_core::catalog::{self, Function, Requirement, RiskTier, VehicleState};
-use protocol_core::obd2::{self, Dtc, MilStatus, PidInfo, Service};
+use protocol_core::obd2::{self, Dtc, MilStatus, PidInfo, Readiness, Service};
 use protocol_core::snapshot::{
-    self, ModuleDiff, RecordDef, RecordValue, Snapshot, SnapshotFault, SnapshotKind,
+    self, ModuleDiff, RecordKind, RecordValue, Snapshot, SnapshotFault, SnapshotKind,
 };
+use protocol_core::vehicle::{self, JobStatus, Layout, Module, Pack, System};
+use protocol_core::vin::{self, VinInfo};
 use serde::Serialize;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use timemachine::SnapshotStore;
 use tokio::sync::Mutex;
-use transport::elm::{AdapterInfo, ClientError, ElmClient};
-use transport::sim::{self, ElmSimulator, SimEngine};
+use transport::elm::{AdapterInfo, ClientError, ElmClient, FreezeFrame};
+use transport::sim::{self, ElmSimulator, SimCar, SimEngine};
 use transport::{DiscoveredDevice, HardwareTransport, TransportKind};
 
 type Client = ElmClient<Box<dyn HardwareTransport + Send>>;
@@ -29,6 +30,8 @@ struct Inner {
     client: Option<Client>,
     device: Option<DiscoveredDevice>,
     vin: Option<String>,
+    /// The vehicle pack for the connected car (generic OBD-II if unknown).
+    pack: Option<&'static Pack>,
     charger_confirmed: bool,
     log: Vec<LogEntry>,
 }
@@ -113,8 +116,7 @@ struct Catalog {
     tiers: Vec<TierView>,
     functions: Vec<FunctionView>,
     pids: &'static [PidInfo],
-    modules: &'static [Module],
-    records: &'static [RecordDef],
+    packs: Vec<&'static Pack>,
 }
 
 #[derive(Serialize)]
@@ -135,6 +137,16 @@ fn now_ms() -> u128 {
 }
 
 impl Inner {
+    fn pack(&self) -> &'static Pack {
+        self.pack.unwrap_or(&vehicle::GENERIC)
+    }
+
+    fn module(&self, address: u8) -> CmdResult<&'static Module> {
+        self.pack()
+            .module(address)
+            .ok_or_else(|| CmdError::new("unknown", "This car has no such module."))
+    }
+
     fn client(&mut self) -> CmdResult<&mut Client> {
         self.client
             .as_mut()
@@ -171,13 +183,14 @@ impl Inner {
     async fn vehicle_state(&mut self, function_id: Option<&str>) -> CmdResult<VehicleState> {
         let simulated = self.simulated();
         let charger = self.charger_confirmed;
+        let pack = self.pack();
         let c = self.client()?;
         let speed = c.read_pid(0x0D).await.ok();
         let rpm = c.read_pid(0x0C).await.ok();
         let battery = c.battery_voltage().await.ok().map(|v| v as f64);
         let job_verified = match function_id {
             _ if simulated => true,
-            Some(id) => job_verified(id),
+            Some(id) => job_verified(pack, id),
             None => false,
         };
         Ok(VehicleState {
@@ -259,6 +272,7 @@ impl Inner {
     ) -> CmdResult<Snapshot> {
         let simulated = self.simulated();
         let vin = self.vin.clone().unwrap_or_else(|| "UNKNOWN".into());
+        let pack = self.pack();
         let c = self.client()?;
         let identification = c.read_module_identification(module).await.ok();
         let faults = c
@@ -273,12 +287,13 @@ impl Inner {
         let mut records = Vec::new();
         let mut missing = Vec::new();
         // Unverified identifiers are only ever sent to the demo car.
-        for d in bmw_e70::records_for(module.address)
+        for d in pack
+            .records_for(module.address)
             .filter(|d| simulated || d.status == JobStatus::Verified)
         {
-            match c.read_record(module, d.lid).await {
-                Ok(raw) if raw.len() == d.len() => records.push(RecordValue { lid: d.lid, raw }),
-                _ => missing.push(d.lid),
+            match c.read_record(module, d.id).await {
+                Ok(raw) if raw.len() == d.len() => records.push(RecordValue { id: d.id, raw }),
+                _ => missing.push(d.id),
             }
         }
         let at = now_ms() as u64;
@@ -329,19 +344,36 @@ impl Gated {
     }
 }
 
+/// The engine module of a pack, if it has one.
+fn engine_module(pack: &'static Pack) -> Option<&'static Module> {
+    pack.modules.iter().find(|m| m.system == System::Powertrain)
+}
+
+/// The module that holds keys and the immobilizer.
+fn key_module(pack: &'static Pack) -> Option<&'static Module> {
+    pack.modules
+        .iter()
+        .find(|m| ["CAS", "EZS", "SMART KEY", "KEYLESS"].contains(&m.name))
+}
+
 /// Modules a special function writes to, which get backed up first.
-fn function_targets(function_id: &str) -> Vec<&'static Module> {
-    let mut out: Vec<&'static Module> = bmw_e70::JOBS
+fn function_targets(pack: &'static Pack, function_id: &str) -> Vec<&'static Module> {
+    let mut out: Vec<&'static Module> = pack
+        .jobs
         .iter()
         .filter(|j| j.function_id == function_id)
-        .filter_map(|j| bmw_e70::module_at(j.module.address))
+        .filter_map(|j| pack.module(j.module))
         .collect();
     out.dedup_by_key(|m| m.address);
     if out.is_empty() {
         out.extend(match function_id {
-            "actuator_test" | "flash" => Some(&bmw_e70::DME),
-            "coding" => Some(&bmw_e70::FRM),
-            "key_programming" => Some(&bmw_e70::CAS),
+            "actuator_test" | "flash" => engine_module(pack),
+            "coding" => pack
+                .records
+                .iter()
+                .find(|r| r.kind == RecordKind::Coding)
+                .and_then(|r| pack.module(r.module)),
+            "key_programming" => key_module(pack),
             _ => None,
         });
     }
@@ -349,13 +381,14 @@ fn function_targets(function_id: &str) -> Vec<&'static Module> {
 }
 
 /// True when every job behind a function has verified request bytes.
-fn job_verified(function_id: &str) -> bool {
+fn job_verified(pack: &Pack, function_id: &str) -> bool {
     match catalog::function(function_id).map(|f| f.tier) {
         Some(RiskTier::Read) => true,
-        // Clearing codes uses standard services, not BMW-specific jobs.
+        // Clearing codes uses standard services, not brand-specific jobs.
         _ if function_id == "clear_codes" => true,
         _ => {
-            let jobs: Vec<_> = bmw_e70::JOBS
+            let jobs: Vec<_> = pack
+                .jobs
                 .iter()
                 .filter(|j| j.function_id == function_id)
                 .collect();
@@ -391,43 +424,80 @@ fn catalog() -> Catalog {
             tier_label: f.tier.label(),
             confirmations: f.tier.confirmations(),
             requirements: f.requires.iter().copied().map(Into::into).collect(),
-            verified_on_car: job_verified(f.id),
+            // Verified for a real car on at least one pack.
+            verified_on_car: vehicle::packs().iter().any(|p| job_verified(p, f.id)),
         })
         .collect();
     Catalog {
         tiers,
         functions,
         pids: obd2::PIDS,
-        modules: bmw_e70::MODULES,
-        records: bmw_e70::RECORDS,
+        packs: vehicle::packs().to_vec(),
     }
 }
 
+const SIM_PREFIX: &str = "sim:";
+
 #[tauri::command]
 fn list_devices() -> Vec<DiscoveredDevice> {
-    vec![
-        DiscoveredDevice {
-            id: "sim-idle".into(),
-            name: "Demo X5 · engine idling".into(),
-            detail: "Simulated 2008 E70 X5 in Park with the engine running. Fake data.".into(),
-            transport: TransportKind::Simulator { engine_running: true },
+    let mut out: Vec<DiscoveredDevice> = sim::SIM_CARS
+        .iter()
+        .map(|car| DiscoveredDevice {
+            id: format!("{SIM_PREFIX}{}", car.id),
+            name: format!("Demo {}", car.label),
+            detail: format!("{} Practice car, fake data.", car.story),
+            transport: TransportKind::Simulator {
+                engine_running: true,
+            },
             available: true,
+        })
+        .collect();
+    out.push(DiscoveredDevice {
+        id: "veepeak-ble".into(),
+        name: "Veepeak OBDCheck BLE".into(),
+        detail: "Bluetooth LE adapter. Live connection arrives in the next step.".into(),
+        transport: TransportKind::Ble {
+            peripheral_id: String::new(),
         },
-        DiscoveredDevice {
-            id: "sim-off".into(),
-            name: "Demo X5 · ignition on".into(),
-            detail: "Simulated 2008 E70 X5 with ignition on and engine off, ready for service functions. Fake data.".into(),
-            transport: TransportKind::Simulator { engine_running: false },
-            available: true,
-        },
-        DiscoveredDevice {
-            id: "veepeak-ble".into(),
-            name: "Veepeak OBDCheck BLE".into(),
-            detail: "Bluetooth LE adapter. Live connection arrives in the next step.".into(),
-            transport: TransportKind::Ble { peripheral_id: String::new() },
-            available: false,
-        },
-    ]
+        available: false,
+    });
+    out
+}
+
+fn sim_car_for(device_id: &str) -> Option<&'static SimCar> {
+    device_id.strip_prefix(SIM_PREFIX).and_then(sim::sim_car)
+}
+
+/// What the app knows about the car it is talking to.
+#[derive(Serialize)]
+struct VehicleView {
+    vin_info: Option<VinInfo>,
+    pack: &'static Pack,
+    /// Modules the scan will ask for: the whole pack on the demo car or a
+    /// documented layout, only the legislated OBD-II IDs otherwise.
+    scan_addresses: Vec<u8>,
+    demo_story: Option<&'static str>,
+}
+
+impl VehicleView {
+    fn new(pack: &'static Pack, vin: Option<&str>, car: Option<&'static SimCar>) -> Self {
+        let scan_addresses = if car.is_some() || pack.layout == Layout::Documented {
+            pack.modules.iter().map(|m| m.address).collect()
+        } else {
+            pack.scannable_on_real_car().map(|m| m.address).collect()
+        };
+        Self {
+            vin_info: vin.map(|v| vin::decode(v, current_year())),
+            pack,
+            scan_addresses,
+            demo_story: car.map(|c| c.story),
+        }
+    }
+}
+
+fn current_year() -> u16 {
+    // Days since 1970 / 365.2425, good enough for model-year decoding.
+    (1970 + now_ms() / 1000 / 86_400 * 10_000 / 3_652_425) as u16
 }
 
 #[derive(Serialize)]
@@ -439,6 +509,7 @@ struct ConnectReport {
     mil: Option<MilStatus>,
     supported_pids: Vec<u8>,
     simulated: bool,
+    vehicle: VehicleView,
     /// The adapter conversation during setup, for the connection log.
     transcript: Vec<String>,
 }
@@ -453,13 +524,17 @@ async fn connect(
         .into_iter()
         .find(|d| d.id == id)
         .ok_or_else(|| CmdError::new("unknown", "Unknown adapter"))?;
-    let link: Box<dyn HardwareTransport + Send> = match &device.transport {
-        TransportKind::Simulator { engine_running } => {
-            Box::new(ElmSimulator::new(if *engine_running {
-                SimEngine::Idling
-            } else {
-                SimEngine::IgnitionOn
-            }))
+    let car = sim_car_for(&device.id);
+    let link: Box<dyn HardwareTransport + Send> = match (&device.transport, car) {
+        (TransportKind::Simulator { engine_running }, Some(car)) => {
+            Box::new(ElmSimulator::with_car(
+                car,
+                if *engine_running {
+                    SimEngine::Idling
+                } else {
+                    SimEngine::IgnitionOn
+                },
+            ))
         }
         _ => {
             return Err(CmdError::new(
@@ -486,13 +561,29 @@ async fn connect(
         .map(|s| s.log.clone())
         .unwrap_or_default();
     let simulated = matches!(device.transport, TransportKind::Simulator { .. });
-    if simulated {
-        if let Some(v) = &vin {
-            let _ = timemachine::seed_demo_history(&store, v, now_ms() as u64);
-        }
+    // The demo car's pack, or the pack for the make the VIN names.
+    let pack: &'static Pack = match (car, &vin) {
+        (Some(car), _) => car.pack,
+        (None, Some(v)) => vehicle::pack_for_make(vin::decode(v, current_year()).make),
+        (None, None) => &vehicle::GENERIC,
+    };
+    if let (Some(car), Some(v)) = (car, &vin) {
+        let now = now_ms() as u64;
+        let _ = if car.pack.id == "bmw_e70" {
+            timemachine::seed_demo_history(&store, v, now)
+        } else {
+            let current = client
+                .link_mut()
+                .simulator()
+                .map(|s| s.records())
+                .unwrap_or_default();
+            timemachine::seed_generic_history(&store, v, car.pack, &current, now)
+        };
     }
+    let vehicle = VehicleView::new(pack, vin.as_deref(), car);
     inner.client = Some(client);
     inner.vin = vin.clone();
+    inner.pack = Some(pack);
     inner.device = Some(device.clone());
     inner.charger_confirmed = false;
     let target = vin.clone().unwrap_or_else(|| "vehicle".into());
@@ -501,7 +592,10 @@ async fn connect(
         &target,
         RiskTier::Read,
         true,
-        format!("Connected via {}", device.name),
+        format!(
+            "Connected via {} ({} {})",
+            device.name, pack.brand, pack.model
+        ),
     );
     Ok(ConnectReport {
         device,
@@ -511,6 +605,7 @@ async fn connect(
         mil,
         supported_pids,
         simulated,
+        vehicle,
         transcript,
     })
 }
@@ -530,6 +625,7 @@ async fn disconnect(state: State<'_, AppState>) -> CmdResult<()> {
     }
     inner.device = None;
     inner.vin = None;
+    inner.pack = None;
     Ok(())
 }
 
@@ -571,11 +667,12 @@ struct StateReport {
 async fn vehicle_state(state: State<'_, AppState>) -> CmdResult<StateReport> {
     let mut inner = state.0.lock().await;
     let simulated = inner.simulated();
+    let pack = inner.pack();
     let mut base = inner.vehicle_state(None).await?;
     let functions = catalog::FUNCTIONS
         .iter()
         .map(|f| {
-            base.job_verified = simulated || job_verified(f.id);
+            base.job_verified = simulated || job_verified(pack, f.id);
             FunctionReadiness {
                 id: f.id,
                 unmet: f.unmet(&base).into_iter().map(Into::into).collect(),
@@ -674,8 +771,9 @@ async fn clear_obd_codes(
     store: State<'_, SnapshotStore>,
 ) -> CmdResult<Vec<Dtc>> {
     let mut inner = state.0.lock().await;
+    let backup: Vec<&'static Module> = engine_module(inner.pack()).into_iter().collect();
     inner
-        .gate("clear_codes", "Engine (OBD-II)", &store, &[&bmw_e70::DME])
+        .gate("clear_codes", "Engine (OBD-II)", &store, &backup)
         .await?;
     let c = inner.client()?;
     // Save what we are about to erase.
@@ -716,25 +814,102 @@ struct ModuleScan {
     module: Module,
     present: bool,
     faults: Option<usize>,
+    codes: Vec<ModuleFault>,
+    /// How long the module took to answer, for the Quick Test.
+    elapsed_ms: u64,
+}
+
+/// Plain-language text for a module fault: the demo car's own text, else
+/// the generic SAE meaning of the code's first five characters.
+fn fault_text(simulated: bool, pack: &Pack, address: u8, code: &str) -> Option<&'static str> {
+    simulated
+        .then(|| sim::sim_fault_text(pack.id, address, code))
+        .flatten()
+        .or_else(|| code.get(..5).and_then(obd2::describe_dtc))
+}
+
+async fn scan_one(
+    c: &mut Client,
+    simulated: bool,
+    pack: &'static Pack,
+    m: &'static Module,
+) -> ModuleScan {
+    let started = std::time::Instant::now();
+    let present = c.probe(m).await.unwrap_or(false);
+    let dtcs = if present {
+        c.read_module_dtcs(m).await.ok()
+    } else {
+        None
+    };
+    let codes = dtcs
+        .iter()
+        .flatten()
+        .map(|d| ModuleFault {
+            description: fault_text(simulated, pack, m.address, &d.code),
+            code: d.code.clone(),
+            status: d.status,
+        })
+        .collect();
+    ModuleScan {
+        module: *m,
+        present,
+        faults: dtcs.map(|d| d.len()),
+        codes,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    }
+}
+
+/// Which modules may be scanned on this car (see [`VehicleView`]).
+fn scan_list(inner: &Inner) -> Vec<&'static Module> {
+    let pack = inner.pack();
+    if inner.simulated() || pack.layout == Layout::Documented {
+        pack.modules.iter().collect()
+    } else {
+        pack.scannable_on_real_car().collect()
+    }
+}
+
+/// Scans one module: used by the Quick Test to show progress per module.
+#[tauri::command]
+async fn scan_module(state: State<'_, AppState>, address: u8) -> CmdResult<ModuleScan> {
+    let mut inner = state.0.lock().await;
+    let module = inner.module(address)?;
+    if !scan_list(&inner).iter().any(|m| m.address == address) {
+        return Err(CmdError::new(
+            "unverified",
+            "This module's address is not confirmed for a real car yet, so it is not scanned.",
+        ));
+    }
+    let simulated = inner.simulated();
+    let pack = inner.pack();
+    let c = inner.client()?;
+    Ok(scan_one(c, simulated, pack, module).await)
+}
+
+/// Records a finished Quick Test in the activity log.
+#[tauri::command]
+async fn log_quick_test(state: State<'_, AppState>, found: usize, faults: usize) -> CmdResult<()> {
+    let mut inner = state.0.lock().await;
+    inner.record(
+        "Quick Test",
+        "All modules",
+        RiskTier::Read,
+        true,
+        format!("{found} modules answered, {faults} faults"),
+    );
+    Ok(())
 }
 
 #[tauri::command]
 async fn scan_modules(state: State<'_, AppState>) -> CmdResult<Vec<ModuleScan>> {
     let mut inner = state.0.lock().await;
+    let list = scan_list(&inner);
+    let simulated = inner.simulated();
+    let pack = inner.pack();
     let c = inner.client()?;
     let mut out = Vec::new();
-    for m in bmw_e70::MODULES {
-        let present = c.probe(m).await.unwrap_or(false);
-        let faults = if present {
-            c.read_module_dtcs(m).await.ok().map(|d| d.len())
-        } else {
-            None
-        };
-        out.push(ModuleScan {
-            module: *m,
-            present,
-            faults,
-        });
+    for m in list {
+        out.push(scan_one(c, simulated, pack, m).await);
     }
     let found = out.iter().filter(|m| m.present).count();
     inner.record(
@@ -754,15 +929,12 @@ struct ModuleDetail {
     faults: Vec<ModuleFault>,
 }
 
-fn module_by_address(address: u8) -> CmdResult<&'static Module> {
-    bmw_e70::module_at(address).ok_or_else(|| CmdError::new("unknown", "Unknown module"))
-}
-
 #[tauri::command]
 async fn read_module(state: State<'_, AppState>, address: u8) -> CmdResult<ModuleDetail> {
-    let module = module_by_address(address)?;
     let mut inner = state.0.lock().await;
+    let module = inner.module(address)?;
     let simulated = inner.simulated();
+    let pack = inner.pack();
     let c = inner.client()?;
     let identification = c.read_module_identification(module).await.ok();
     let faults = c
@@ -770,11 +942,7 @@ async fn read_module(state: State<'_, AppState>, address: u8) -> CmdResult<Modul
         .await?
         .into_iter()
         .map(|d| ModuleFault {
-            description: if simulated {
-                sim::sim_fault_text(address, &d.code)
-            } else {
-                None
-            },
+            description: fault_text(simulated, pack, address, &d.code),
             code: d.code,
             status: d.status,
         })
@@ -799,18 +967,14 @@ async fn clear_module_codes(
     store: State<'_, SnapshotStore>,
     address: u8,
 ) -> CmdResult<()> {
-    let module = module_by_address(address)?;
     let mut inner = state.0.lock().await;
+    let module = inner.module(address)?;
     inner
         .gate("clear_codes", module.name, &store, &[module])
         .await?;
     let c = inner.client()?;
     let saved = c.read_module_dtcs(module).await?;
-    c.bmw(
-        module,
-        &protocol_core::diag::request::clear_dtcs(module.protocol()),
-    )
-    .await?;
+    c.clear_module_dtcs(module).await?;
     let codes: Vec<_> = saved.iter().map(|d| d.code.clone()).collect();
     inner.record(
         "Clear fault memory",
@@ -851,7 +1015,17 @@ async fn run_function(
     }
     let mut inner = state.0.lock().await;
     let simulated = inner.simulated();
-    let targets = function_targets(&id);
+    let pack = inner.pack();
+    if !pack.offers(&id) {
+        return Err(CmdError::new(
+            "unavailable",
+            format!(
+                "This function is not available for the {} {}.",
+                pack.brand, pack.model
+            ),
+        ));
+    }
+    let targets = function_targets(pack, &id);
     let gated = inner.gate(&id, "vehicle", &store, &targets).await?;
     let f = gated.function;
     if !simulated {
@@ -866,12 +1040,18 @@ async fn run_function(
     steps.extend(gated.backup_step());
     // What the routine changes inside the demo car.
     if let Some(sim) = inner.client()?.link_mut().simulator() {
-        match f.id {
-            "dme_adaptation_reset" => sim.reset_adaptations(bmw_e70::DME.address),
-            "egs_adaptation_reset" => sim.reset_adaptations(bmw_e70::EGS.address),
-            _ => {}
+        if f.id.ends_with("_adaptation_reset") {
+            for m in &targets {
+                sim.reset_adaptations(m.address);
+            }
         }
     }
+    let engine = engine_module(pack)
+        .map(|m| m.name)
+        .unwrap_or("engine module");
+    let keys = key_module(pack).map(|m| m.name).unwrap_or("immobilizer");
+    let actuator_done = format!("Test finished; control returned to the {engine}");
+    let key_check = format!("Verified VIN match between {keys} and {engine}");
     steps.extend(
         match f.id {
             "coolant_bleed" => vec![
@@ -898,7 +1078,7 @@ async fn run_function(
             "actuator_test" => vec![
                 "Radiator fan on at 30%",
                 "Radiator fan off",
-                "Test finished; control returned to the DME",
+                actuator_done.as_str(),
             ],
             "coding" => vec![
                 "Read current coding",
@@ -906,7 +1086,7 @@ async fn run_function(
                 "Verified by reading back",
             ],
             "key_programming" => vec![
-                "Verified VIN match between CAS and DME",
+                key_check.as_str(),
                 "Read key slots: 2 in use, 8 free",
                 "Programmed key into slot 3",
                 "Test: hold the new key to the steering column and press Start",
@@ -919,7 +1099,7 @@ async fn run_function(
             _ => vec!["Done"],
         }
         .into_iter()
-        .map(String::from),
+        .map(|s| s.to_string()),
     );
     inner.record(f.name, "vehicle", f.tier, true, "Completed (demo car)");
     Ok(FunctionRun { simulated, steps })
@@ -945,8 +1125,8 @@ async fn take_snapshot(
     store: State<'_, SnapshotStore>,
     address: u8,
 ) -> CmdResult<Snapshot> {
-    let module = module_by_address(address)?;
     let mut inner = state.0.lock().await;
+    let module = inner.module(address)?;
     inner.vin()?;
     let s = inner
         .capture(module, SnapshotKind::Manual, "Taken by hand".into())
@@ -1002,11 +1182,11 @@ async fn compare_snapshots(
     from: String,
     to: String,
 ) -> CmdResult<Comparison> {
-    let module = module_by_address(address)?;
     let mut inner = state.0.lock().await;
+    let module = inner.module(address)?;
     let from = load_or_read(&mut inner, &store, module, &from).await?;
     let to = load_or_read(&mut inner, &store, module, &to).await?;
-    let diff = snapshot::diff(&from, &to, bmw_e70::RECORDS);
+    let diff = snapshot::diff(&from, &to, inner.pack().records);
     Ok(Comparison { from, to, diff })
 }
 
@@ -1027,8 +1207,8 @@ async fn restore_snapshot(
     address: u8,
     id: String,
 ) -> CmdResult<RestoreReport> {
-    let module = module_by_address(address)?;
     let mut inner = state.0.lock().await;
+    let module = inner.module(address)?;
     let vin = inner.vin()?;
     let target = store
         .get(&vin, &id)
@@ -1042,7 +1222,7 @@ async fn restore_snapshot(
         .first()
         .cloned()
         .ok_or_else(|| CmdError::new("backup", "The safety backup was not taken."))?;
-    let plan = snapshot::restore_plan(&before, &target, bmw_e70::RECORDS);
+    let plan = snapshot::restore_plan(&before, &target, inner.pack().records);
     let mut steps = vec!["Safety checks passed".to_string()];
     steps.extend(gated.backup_step());
     let undo_id = Some(before.id.clone());
@@ -1066,8 +1246,8 @@ async fn restore_snapshot(
     let mut failure = None;
     for w in &plan {
         let result = async {
-            c.write_record(module, w.lid, &w.raw).await?;
-            let back = c.read_record(module, w.lid).await?;
+            c.write_record(module, w.id, &w.raw).await?;
+            let back = c.read_record(module, w.id).await?;
             Ok::<bool, ClientError>(back == w.raw)
         }
         .await;
@@ -1122,6 +1302,46 @@ async fn restore_snapshot(
     })
 }
 
+// ---- commands: emissions readiness ------------------------------------
+
+#[derive(Serialize)]
+struct EmissionsReport {
+    readiness: Option<Readiness>,
+    freeze_frame: Option<FreezeFrame>,
+    /// Distance driven since codes were last cleared (PID 31), in km.
+    km_since_clear: Option<f64>,
+    /// Warm-ups since codes were last cleared (PID 30).
+    warmups_since_clear: Option<f64>,
+}
+
+/// Readiness monitors and freeze frame: what an inspection station sees.
+#[tauri::command]
+async fn read_emissions(state: State<'_, AppState>) -> CmdResult<EmissionsReport> {
+    let mut inner = state.0.lock().await;
+    let c = inner.client()?;
+    let readiness = c.read_readiness().await.ok();
+    let freeze_frame = c.read_freeze_frame().await.unwrap_or(None);
+    let km_since_clear = c.read_pid(0x31).await.ok();
+    let warmups_since_clear = c.read_pid(0x30).await.ok();
+    let outcome = match &readiness {
+        Some(r) => format!("{} monitors incomplete", r.incomplete()),
+        None => "Readiness not available".into(),
+    };
+    inner.record(
+        "Read emissions readiness",
+        "Engine (OBD-II)",
+        RiskTier::Read,
+        true,
+        outcome,
+    );
+    Ok(EmissionsReport {
+        readiness,
+        freeze_frame,
+        km_since_clear,
+        warmups_since_clear,
+    })
+}
+
 #[tauri::command]
 async fn activity_log(state: State<'_, AppState>) -> CmdResult<Vec<serde_json::Value>> {
     let inner = state.0.lock().await;
@@ -1158,7 +1378,10 @@ pub fn run() {
             read_obd_codes,
             clear_obd_codes,
             scan_modules,
+            scan_module,
+            log_quick_test,
             read_module,
+            read_emissions,
             clear_module_codes,
             run_function,
             list_snapshots,

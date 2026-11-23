@@ -1,15 +1,16 @@
 //! High-level client for ELM327-compatible adapters.
 //!
 //! Wraps any [`HardwareTransport`] and speaks the adapter's text protocol:
-//! initialisation, OBD-II requests to all engine modules, and BMW requests
-//! to a single module with extended addressing.
+//! initialisation, OBD-II requests to all engine modules, and diagnostic
+//! requests to a single module of any brand: BMW extended addressing with
+//! KWP2000, or UDS on a plain 11-bit request/response pair.
 
 use crate::{HardwareTransport, TransportError};
-use protocol_core::bmw_e70::{self, Module};
 use protocol_core::diag::{self, request, ModuleDtc, Protocol, Reply};
 use protocol_core::elm327::{self, AdapterError, Response};
 use protocol_core::isotp::{Addressing, Progress, Reassembler};
-use protocol_core::obd2::{self, Dtc, Service};
+use protocol_core::obd2::{self, Dtc, Readiness, Service};
+use protocol_core::vehicle::{Link, Module};
 use protocol_core::{CanId, ProtocolError};
 use std::time::Duration;
 
@@ -41,7 +42,8 @@ pub struct AdapterInfo {
 enum Target {
     Unknown,
     Obd,
-    Bmw(u8),
+    /// Request CAN ID and module address.
+    Module(CanId, u8),
 }
 
 pub struct ElmClient<T: HardwareTransport> {
@@ -242,31 +244,66 @@ impl<T: HardwareTransport> ElmClient<T> {
         }
     }
 
-    // ---- BMW ----------------------------------------------------------
+    // ---- Readiness and freeze frame -----------------------------------
 
-    async fn select_bmw(&mut self, module: &Module) -> Result<()> {
-        if self.target != Target::Bmw(module.address) {
-            if self
-                .info
-                .as_ref()
-                .is_some_and(|i| !i.supports_extended_addressing)
+    /// Emissions readiness monitors (service 01, PID 01).
+    pub async fn read_readiness(&mut self) -> Result<Readiness> {
+        let payload = self.obd_primary(&obd2::current_data_request(0x01)).await?;
+        Ok(obd2::decode_readiness(&payload)?)
+    }
+
+    /// Freeze frame 0: the code that stored it and the values captured at
+    /// that moment. `None` when no freeze frame is stored.
+    pub async fn read_freeze_frame(&mut self) -> Result<Option<FreezeFrame>> {
+        let payload = self.obd_primary(&obd2::freeze_frame_request(0x02)).await?;
+        let Some(dtc) = obd2::decode_freeze_frame_dtc(&payload)? else {
+            return Ok(None);
+        };
+        let mut values = Vec::new();
+        for &pid in FREEZE_PIDS {
+            match self.obd_primary(&obd2::freeze_frame_request(pid)).await {
+                Ok(p) => {
+                    if let Ok((pid, v)) = obd2::decode_freeze_frame(&p) {
+                        values.push((pid, v));
+                    }
+                }
+                // Not every car captures every value.
+                Err(ClientError::Adapter(AdapterError::NoData))
+                | Err(ClientError::NoReply(_))
+                | Err(ClientError::Protocol(_)) => {}
+                Err(e) => return Err(e),
+            }
+        }
+        Ok(Some(FreezeFrame { dtc, values }))
+    }
+
+    // ---- Modules (any brand) -------------------------------------------
+
+    async fn select_module(&mut self, module: &Module) -> Result<()> {
+        let target = Target::Module(module.request_id(), module.address);
+        if self.target != target {
+            if module.link == Link::BmwExtended
+                && self
+                    .info
+                    .as_ref()
+                    .is_some_and(|i| !i.supports_extended_addressing)
             {
                 return Err(ClientError::Unsupported(
                     "AT CEA (BMW extended addressing)".into(),
                 ));
             }
-            for cmd in elm327::bmw_module_setup(module) {
+            for cmd in elm327::module_setup(module) {
                 self.at(&cmd).await?;
             }
-            self.target = Target::Bmw(module.address);
+            self.target = target;
         }
         Ok(())
     }
 
-    /// Sends a KWP2000 request to one module and returns the positive reply
-    /// data (after the response SID).
-    pub async fn bmw(&mut self, module: &Module, req: &[u8]) -> Result<Vec<u8>> {
-        self.select_bmw(module).await?;
+    /// Sends a diagnostic request (KWP2000 or UDS) to one module and
+    /// returns the positive reply data (after the response SID).
+    pub async fn module(&mut self, module: &Module, req: &[u8]) -> Result<Vec<u8>> {
+        self.select_module(module).await?;
         let sid = *req
             .first()
             .ok_or(ProtocolError::MalformedFrame("empty request"))?;
@@ -283,7 +320,7 @@ impl<T: HardwareTransport> ElmClient<T> {
             .filter(|f| f.id == module.response_id())
             .map(|f| f.data)
             .collect();
-        for msg in messages(&mine, Addressing::Extended(bmw_e70::TESTER_ADDRESS))? {
+        for msg in messages(&mine, module.reply_addressing())? {
             match diag::parse_reply(sid, &msg)? {
                 Reply::Pending => continue,
                 Reply::Positive(data) => return Ok(data.to_vec()),
@@ -299,9 +336,12 @@ impl<T: HardwareTransport> ElmClient<T> {
         Err(ClientError::NoReply(module.name.into()))
     }
 
-    /// Whether a module answers at all.
+    /// Whether a module answers at all (Tester Present with a reply).
     pub async fn probe(&mut self, module: &Module) -> Result<bool> {
-        match self.bmw(module, &bmw_e70::scan_request()).await {
+        match self
+            .module(module, &request::tester_present(module.protocol()))
+            .await
+        {
             Ok(_) => Ok(true),
             // A negative reply still proves the module is there.
             Err(ClientError::Protocol(ProtocolError::NegativeResponse { .. })) => Ok(true),
@@ -312,40 +352,94 @@ impl<T: HardwareTransport> ElmClient<T> {
 
     /// Reads a module's fault memory.
     pub async fn read_module_dtcs(&mut self, module: &Module) -> Result<Vec<ModuleDtc>> {
-        let data = self
-            .bmw(module, &request::read_dtcs(Protocol::Kwp2000))
-            .await?;
-        Ok(diag::parse_module_dtcs(Protocol::Kwp2000, &data)?)
+        let p = module.protocol();
+        let data = self.module(module, &request::read_dtcs(p)).await?;
+        Ok(diag::parse_module_dtcs(p, &data)?)
     }
 
-    /// Reads a module's identification block as printable text.
-    /// Reads one Time Machine record (`21 lid`).
-    pub async fn read_record(&mut self, module: &Module, lid: u8) -> Result<Vec<u8>> {
-        let data = self.bmw(module, &request::kwp_read_local_id(lid)).await?;
-        match data.split_first() {
-            Some((&echo, value)) if echo == lid => Ok(value.to_vec()),
-            _ => Err(ProtocolError::MalformedFrame("record reply for another id").into()),
+    /// Clears a module's fault memory. Callers must check the gates first.
+    pub async fn clear_module_dtcs(&mut self, module: &Module) -> Result<()> {
+        self.module(module, &request::clear_dtcs(module.protocol()))
+            .await
+            .map(|_| ())
+    }
+
+    /// Reads one Time Machine record: KWP `21 id` or UDS `22 id`.
+    pub async fn read_record(&mut self, module: &Module, id: u16) -> Result<Vec<u8>> {
+        match module.protocol() {
+            Protocol::Kwp2000 => {
+                let lid = kwp_lid(id)?;
+                let data = self
+                    .module(module, &request::kwp_read_local_id(lid))
+                    .await?;
+                match data.split_first() {
+                    Some((&echo, value)) if echo == lid => Ok(value.to_vec()),
+                    _ => Err(ProtocolError::MalformedFrame("record reply for another id").into()),
+                }
+            }
+            Protocol::Uds => {
+                let data = self.module(module, &request::uds_read_did(id)).await?;
+                match data.split_at_checked(2) {
+                    Some((echo, value)) if echo == id.to_be_bytes() => Ok(value.to_vec()),
+                    _ => Err(ProtocolError::MalformedFrame("record reply for another id").into()),
+                }
+            }
         }
     }
 
-    /// Writes one coding record (`3B lid data`).
-    pub async fn write_record(&mut self, module: &Module, lid: u8, value: &[u8]) -> Result<()> {
-        let data = self
-            .bmw(module, &request::kwp_write_local_id(lid, value))
-            .await?;
-        match data.first() {
-            Some(&echo) if echo == lid => Ok(()),
-            _ => Err(ProtocolError::MalformedFrame("write reply for another id").into()),
+    /// Writes one coding record: KWP `3B id data` or UDS `2E id data`.
+    pub async fn write_record(&mut self, module: &Module, id: u16, value: &[u8]) -> Result<()> {
+        let ok = match module.protocol() {
+            Protocol::Kwp2000 => {
+                let lid = kwp_lid(id)?;
+                let data = self
+                    .module(module, &request::kwp_write_local_id(lid, value))
+                    .await?;
+                data.first() == Some(&lid)
+            }
+            Protocol::Uds => {
+                let data = self
+                    .module(module, &request::uds_write_did(id, value))
+                    .await?;
+                data.get(..2) == Some(&id.to_be_bytes()[..])
+            }
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err(ProtocolError::MalformedFrame("write reply for another id").into())
         }
     }
 
+    /// Reads a module's identification as printable text: KWP `1A 80`, or
+    /// UDS part number (F187) and software version (F189).
     pub async fn read_module_identification(&mut self, module: &Module) -> Result<String> {
-        let data = self
-            .bmw(module, &request::kwp_read_identification())
-            .await?;
-        let text: String = data
+        let bytes = match module.protocol() {
+            Protocol::Kwp2000 => {
+                let data = self
+                    .module(module, &request::kwp_read_identification())
+                    .await?;
+                data.into_iter().skip(1).collect::<Vec<u8>>()
+            }
+            Protocol::Uds => {
+                let mut out = Vec::new();
+                for did in request::UDS_IDENT_DIDS {
+                    match self.module(module, &request::uds_read_did(did)).await {
+                        Ok(data) => {
+                            if !out.is_empty() {
+                                out.push(b' ');
+                            }
+                            out.extend(data.into_iter().skip(2));
+                        }
+                        Err(ClientError::Protocol(ProtocolError::NegativeResponse { .. })) => {}
+                        Err(e) => return Err(e),
+                    }
+                }
+                out
+            }
+        };
+        let text: String = bytes
             .iter()
-            .skip(1)
             .map(|&b| {
                 if b.is_ascii_graphic() || b == b' ' {
                     b as char
@@ -356,6 +450,24 @@ impl<T: HardwareTransport> ElmClient<T> {
             .collect();
         Ok(text.trim().to_string())
     }
+}
+
+/// Values read from freeze frame 0, in this order when the car has them.
+const FREEZE_PIDS: &[u8] = &[
+    0x0C, 0x0D, 0x05, 0x04, 0x06, 0x07, 0x08, 0x09, 0x0B, 0x0F, 0x11,
+];
+
+/// Freeze frame 0: the emissions code that stored it and the live values
+/// captured at that moment.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct FreezeFrame {
+    pub dtc: String,
+    /// (PID, value in the PID's unit).
+    pub values: Vec<(u8, f64)>,
+}
+
+fn kwp_lid(id: u16) -> Result<u8> {
+    u8::try_from(id).map_err(|_| ProtocolError::MalformedFrame("KWP local id is one byte").into())
 }
 
 /// Splits a sender's frames into complete messages, in arrival order.
@@ -376,7 +488,9 @@ fn messages(frames: &[Vec<u8>], addressing: Addressing) -> Result<Vec<Vec<u8>>> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::{ElmSimulator, SimEngine, SIM_VIN};
+    use crate::sim::{sim_car, ElmSimulator, SimEngine, SIM_VIN};
+    use protocol_core::bmw_e70;
+    use protocol_core::packs::{honda_accord, mercedes_w167, toyota_xv70};
 
     async fn client(engine: SimEngine) -> ElmClient<ElmSimulator> {
         let mut c = ElmClient::new(ElmSimulator::new(engine));
@@ -475,7 +589,10 @@ mod tests {
     #[tokio::test]
     async fn writes_are_refused_with_an_explained_reason() {
         let mut c = client(SimEngine::IgnitionOn).await;
-        let err = c.bmw(&bmw_e70::DME, &[0x31, 0x01, 0x02]).await.unwrap_err();
+        let err = c
+            .module(&bmw_e70::DME, &[0x31, 0x01, 0x02])
+            .await
+            .unwrap_err();
         match err {
             ClientError::Protocol(ProtocolError::NegativeResponse { service: 0x31, nrc }) => {
                 assert_eq!(diag::Nrc(nrc).name(), "conditionsNotCorrect");
@@ -545,5 +662,94 @@ mod tests {
         assert!(stft > 3.0, "short-term covers the leak now: {stft}");
         // Coding is untouched by an adaptation reset.
         assert_eq!(c.read_record(&bmw_e70::DME, 0x10).await.unwrap(), vec![210]);
+    }
+
+    async fn car(id: &str, engine: SimEngine) -> ElmClient<ElmSimulator> {
+        let mut c = ElmClient::new(ElmSimulator::with_car(sim_car(id).unwrap(), engine));
+        c.connect().await.unwrap();
+        c
+    }
+
+    #[tokio::test]
+    async fn talks_uds_to_eleven_bit_modules() {
+        let mut c = car("mercedes_gle", SimEngine::IgnitionOn).await;
+        assert_eq!(c.read_vin().await.unwrap(), "SIMULATED0GLE0002");
+        let dtcs = c.read_module_dtcs(&mercedes_w167::AIR).await.unwrap();
+        assert_eq!(dtcs[0].code, "C1525-64");
+        assert!(dtcs[0].flags.as_ref().unwrap().confirmed);
+        let log = &c.link_mut().log;
+        assert!(log.iter().any(|l| l == "AT SH 746"), "{log:?}");
+        assert!(log.iter().any(|l| l == "AT CRA 74E"));
+        // Not fitted on this car.
+        assert!(!c.probe(&mercedes_w167::PTS).await.unwrap());
+        assert!(c.probe(&mercedes_w167::ESP).await.unwrap());
+        // BMW modules do not exist on a Mercedes.
+        assert!(!c.probe(&bmw_e70::DME).await.unwrap());
+        let id = c
+            .read_module_identification(&mercedes_w167::IC)
+            .await
+            .unwrap();
+        assert!(id.contains("SIM-IC") && id.contains("SW 01.02"), "{id}");
+    }
+
+    #[tokio::test]
+    async fn uds_records_follow_the_rules() {
+        let mut c = car("toyota_camry", SimEngine::IgnitionOn).await;
+        let body = &toyota_xv70::BODY;
+        assert_eq!(c.read_record(body, 0x2201).await.unwrap(), vec![1]);
+        c.write_record(body, 0x2201, &[2]).await.unwrap();
+        assert_eq!(c.read_record(body, 0x2201).await.unwrap(), vec![2]);
+        let e = c
+            .write_record(&toyota_xv70::ECM, 0x2101, &[0, 0])
+            .await
+            .unwrap_err();
+        assert_eq!(nrc_of(e), 0x31);
+        c.link_mut().set_engine(SimEngine::Idling);
+        let e = c.write_record(body, 0x2201, &[0]).await.unwrap_err();
+        assert_eq!(nrc_of(e), 0x22);
+        // Back and forth between UDS and broadcast OBD.
+        assert!(c.read_pid(0x0C).await.unwrap() > 0.0);
+        c.clear_module_dtcs(&toyota_xv70::ABS).await.unwrap();
+        assert!(c
+            .read_module_dtcs(&toyota_xv70::ABS)
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
+    async fn readiness_shows_a_recent_clear() {
+        let mut c = car("toyota_camry", SimEngine::Idling).await;
+        let r = c.read_readiness().await.unwrap();
+        assert!(!r.mil_on);
+        assert_eq!(r.incomplete(), 3);
+        // Single-bank engine: no bank 2 trims.
+        assert!(c.read_pid(0x08).await.is_err());
+
+        let mut c = car("bmw_x5", SimEngine::Idling).await;
+        let r = c.read_readiness().await.unwrap();
+        assert!(r.mil_on);
+        assert_eq!(r.dtc_count, 2);
+        assert_eq!(r.incomplete(), 1);
+        c.clear_obd_dtcs().await.unwrap();
+        assert_eq!(c.read_readiness().await.unwrap().incomplete(), 4);
+        assert!(c.read_freeze_frame().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn reads_the_freeze_frame() {
+        let mut c = car("honda_accord", SimEngine::Idling).await;
+        let ff = c.read_freeze_frame().await.unwrap().unwrap();
+        assert_eq!(ff.dtc, "P0420");
+        let get = |pid| ff.values.iter().find(|(p, _)| *p == pid).map(|v| v.1);
+        assert_eq!(get(0x0C), Some(2240.0));
+        assert_eq!(get(0x0D), Some(72.0));
+        assert_eq!(get(0x08), None);
+        assert_eq!(
+            c.read_obd_dtcs(Service::PermanentDtcs).await.unwrap()[0].code,
+            "P0420"
+        );
+        let dtcs = c.read_module_dtcs(&honda_accord::PGM_FI).await.unwrap();
+        assert_eq!(dtcs[0].code, "P0420-00");
     }
 }

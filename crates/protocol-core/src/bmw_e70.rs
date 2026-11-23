@@ -10,47 +10,18 @@
 //! from this list as "expected" until they answer.
 
 use crate::diag::Protocol;
+use crate::vehicle::{BodyStyle, Layout, Link, Make, Pack, Spot};
 use crate::CanId;
 
+pub use crate::vehicle::{Job, JobStatus, Module, System};
+
 /// Tester request CAN ID used for all physical requests.
-pub const TESTER_ID: CanId = 0x6F1;
+pub const TESTER_ID: CanId = crate::vehicle::BMW_TESTER_ID;
 /// Tester address, the first data byte of every module reply.
-pub const TESTER_ADDRESS: u8 = 0xF1;
+pub const TESTER_ADDRESS: u8 = crate::vehicle::BMW_TESTER_ADDRESS;
 
-/// What part of the car a module belongs to, for grouping in the UI.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum System {
-    Powertrain,
-    Chassis,
-    Body,
-    Comfort,
-    Infotainment,
-    Safety,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct Module {
-    /// BMW short name as used in BMW documentation (DME, EGS, ...).
-    pub name: &'static str,
-    /// What it is, in plain words.
-    pub description: &'static str,
-    /// What it controls and why you'd talk to it.
-    pub role: &'static str,
-    pub address: u8,
-    pub system: System,
-}
-
-impl Module {
-    /// CAN ID the module answers on.
-    pub const fn response_id(&self) -> CanId {
-        0x600 + self.address as CanId
-    }
-
-    /// E70 modules speak KWP2000 on D-CAN.
-    pub const fn protocol(&self) -> Protocol {
-        Protocol::Kwp2000
-    }
+const fn spot(x: u16, y: u16, area: &'static str) -> Spot {
+    Spot { x, y, area }
 }
 
 pub const JBE: Module = Module {
@@ -59,6 +30,9 @@ pub const JBE: Module = Module {
     role: "Central power distribution and gateway for body functions: wipers, interior lights, fuel pump relay, and many fuses.",
     address: 0x00,
     system: System::Body,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(182, 204, "Passenger footwell"),
 };
 pub const ACSM: Module = Module {
     name: "ACSM",
@@ -66,6 +40,9 @@ pub const ACSM: Module = Module {
     role: "Controls airbags and seat-belt pretensioners. Read-only in this app apart from clearing stored crash-free faults.",
     address: 0x01,
     system: System::Safety,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(148, 268, "Under the centre console"),
 };
 pub const DME: Module = Module {
     name: "DME",
@@ -73,6 +50,9 @@ pub const DME: Module = Module {
     role: "Runs the engine: fuel injection, ignition, VANOS, throttle, electric water pump, and emissions monitors.",
     address: 0x12,
     system: System::Powertrain,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(166, 120, "Engine bay, passenger side, in the electronics box"),
 };
 pub const EGS: Module = Module {
     name: "EGS",
@@ -80,6 +60,9 @@ pub const EGS: Module = Module {
     role: "Controls the 6-speed automatic: shift timing, torque converter lock-up and clutch pressures.",
     address: 0x18,
     system: System::Powertrain,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(120, 256, "On the transmission, under the centre tunnel"),
 };
 pub const VGSG: Module = Module {
     name: "VGSG",
@@ -87,6 +70,9 @@ pub const VGSG: Module = Module {
     role: "Splits torque between front and rear axles via the transfer case clutch motor.",
     address: 0x19,
     system: System::Powertrain,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(120, 290, "Transfer case, under the car"),
 };
 pub const DSC: Module = Module {
     name: "DSC",
@@ -94,6 +80,9 @@ pub const DSC: Module = Module {
     role: "Anti-lock brakes, traction and stability control, hill descent, and the wheel speed sensors.",
     address: 0x29,
     system: System::Chassis,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(74, 78, "Engine bay, driver side, front"),
 };
 pub const CAS: Module = Module {
     name: "CAS",
@@ -101,6 +90,9 @@ pub const CAS: Module = Module {
     role: "Keys, immobilizer, start/stop button and central locking authorisation. Also stores the car's mileage and VIN copy.",
     address: 0x40,
     system: System::Body,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(100, 198, "Under the dash, left of the steering column"),
 };
 pub const FZD: Module = Module {
     name: "FZD",
@@ -108,6 +100,9 @@ pub const FZD: Module = Module {
     role: "Sunroof, interior lights in the headliner, and the anti-theft interior movement sensor.",
     address: 0x56,
     system: System::Comfort,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(120, 226, "Roof console, above the mirror"),
 };
 pub const KOMBI: Module = Module {
     name: "KOMBI",
@@ -115,6 +110,9 @@ pub const KOMBI: Module = Module {
     role: "Gauges, warning lights, check-control messages and service intervals.",
     address: 0x60,
     system: System::Body,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(88, 178, "Behind the instruments"),
 };
 pub const HEAD_UNIT: Module = Module {
     name: "CCC/CIC",
@@ -122,6 +120,9 @@ pub const HEAD_UNIT: Module = Module {
     role: "Navigation, radio, iDrive screen and vehicle settings menus.",
     address: 0x63,
     system: System::Infotainment,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(152, 178, "Dashboard, behind the centre display"),
 };
 pub const PDC: Module = Module {
     name: "PDC",
@@ -129,6 +130,9 @@ pub const PDC: Module = Module {
     role: "Parking sensors front and rear.",
     address: 0x64,
     system: System::Comfort,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(178, 424, "Rear, behind the boot trim"),
 };
 pub const FRM: Module = Module {
     name: "FRM",
@@ -137,6 +141,9 @@ pub const FRM: Module = Module {
         "Exterior lights, window regulators and the light switch. Bulb-out warnings come from here.",
     address: 0x72,
     system: System::Body,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(58, 204, "Driver footwell, left kick panel"),
 };
 pub const IHKA: Module = Module {
     name: "IHKA",
@@ -144,6 +151,9 @@ pub const IHKA: Module = Module {
     role: "Heating and air conditioning: blower, flaps, A/C compressor request and temperature sensors.",
     address: 0x78,
     system: System::Comfort,
+    link: Link::BmwExtended,
+    protocol: Protocol::Kwp2000,
+    spot: spot(120, 182, "Centre of the dashboard"),
 };
 
 /// Commonly documented E70 modules. Confirm on the car with a scan.
@@ -162,60 +172,35 @@ pub const fn scan_request() -> [u8; 2] {
     [0x3E, 0x01]
 }
 
-/// Status of a special-function definition.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum JobStatus {
-    /// Payload confirmed against a real E70.
-    Verified,
-    /// We know what the job does but not yet the exact request bytes for
-    /// this car. The app refuses to run it until it is verified.
-    PendingCapture,
-}
-
-/// A BMW service job: which module, what it sends, and how sure we are.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
-pub struct Job {
-    /// Catalog id, matches [`crate::catalog`].
-    pub function_id: &'static str,
-    /// BMW job name, for cross-reference with BMW documentation, where we
-    /// are sure of it.
-    pub bmw_job: Option<&'static str>,
-    pub module: Module,
-    /// Request bytes, if known.
-    pub request: Option<&'static [u8]>,
-    pub status: JobStatus,
-}
-
 /// Special functions targeted for the E70. Requests are filled in once they
 /// are confirmed on Robert's car; until then the app shows the job but won't
 /// send anything.
 pub const JOBS: &[Job] = &[
     Job {
         function_id: "coolant_bleed",
-        bmw_job: Some("STEUERN_KUEHLMITTELPUMPE"),
-        module: DME,
+        oem_job: Some("STEUERN_KUEHLMITTELPUMPE"),
+        module: DME.address,
         request: None,
         status: JobStatus::PendingCapture,
     },
     Job {
         function_id: "battery_registration",
-        bmw_job: None,
-        module: DME,
+        oem_job: None,
+        module: DME.address,
         request: None,
         status: JobStatus::PendingCapture,
     },
     Job {
         function_id: "dme_adaptation_reset",
-        bmw_job: None,
-        module: DME,
+        oem_job: None,
+        module: DME.address,
         request: None,
         status: JobStatus::PendingCapture,
     },
     Job {
         function_id: "egs_adaptation_reset",
-        bmw_job: None,
-        module: EGS,
+        oem_job: None,
+        module: EGS.address,
         request: None,
         status: JobStatus::PendingCapture,
     },
@@ -239,7 +224,7 @@ const fn num(bytes: u8, signed: bool, scale: f64, unit: &'static str, digits: u8
 
 const fn rec(
     module: Module,
-    lid: u8,
+    id: u16,
     name: &'static str,
     kind: RecordKind,
     format: Format,
@@ -247,7 +232,7 @@ const fn rec(
 ) -> RecordDef {
     RecordDef {
         module: module.address,
-        lid,
+        id,
         name,
         kind,
         format,
@@ -310,6 +295,37 @@ pub fn records_for(address: u8) -> impl Iterator<Item = &'static RecordDef> {
     RECORDS.iter().filter(move |r| r.module == address)
 }
 
+/// The BMW X5 (E70) vehicle pack.
+pub const PACK: Pack = Pack {
+    id: "bmw_e70",
+    make: Make::Bmw,
+    brand: "BMW",
+    model: "X5",
+    chassis: "E70",
+    years: "2007-2013",
+    body: BodyStyle::Suv,
+    layout: Layout::Documented,
+    dealer_tool: "ISTA",
+    modules: MODULES,
+    records: RECORDS,
+    jobs: JOBS,
+    functions: &[
+        "clear_codes",
+        "coolant_bleed",
+        "battery_registration",
+        "dme_adaptation_reset",
+        "egs_adaptation_reset",
+        "actuator_test",
+        "coding",
+        "key_programming",
+        "flash",
+    ],
+    notes: &[
+        "Modules speak KWP2000 over D-CAN through the OBD port. The adapter must support extended addressing (AT CEA).",
+        "Key programming uses the car's own CAS security data, read with legitimate access. Keys for a car you cannot already unlock are out of scope.",
+    ],
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -330,21 +346,6 @@ mod tests {
             }
         }
         assert_eq!(module_at(0x12), Some(&DME));
-    }
-
-    #[test]
-    fn record_ids_are_unique_per_module() {
-        for (i, a) in RECORDS.iter().enumerate() {
-            assert!(module_at(a.module).is_some(), "{}", a.name);
-            for b in &RECORDS[i + 1..] {
-                assert!(
-                    (a.module, a.lid) != (b.module, b.lid),
-                    "{} and {}",
-                    a.name,
-                    b.name
-                );
-            }
-        }
     }
 
     #[test]

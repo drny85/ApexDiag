@@ -15,7 +15,10 @@ export default function Functions() {
 
   const tiers = catalog?.tiers ?? [];
   // Restoring coding lives in the Time Machine, next to the snapshot it restores.
-  const functions = (catalog?.functions ?? []).filter((f) => f.tier !== "read" && f.id !== "snapshot_restore");
+  const pack = connection?.vehicle.pack;
+  const functions = (catalog?.functions ?? []).filter(
+    (f) => f.tier !== "read" && f.id !== "snapshot_restore" && (!pack || pack.functions.includes(f.id)),
+  );
 
   return (
     <div>
@@ -23,6 +26,19 @@ export default function Functions() {
         title="Special Functions"
         subtitle="Service routines, adaptations, coding, keys and programming. Each one explains what it does and what can go wrong, and stays locked until the car is in a safe state."
       />
+
+      {pack && pack.make !== "generic" && (
+        <div className="mb-5 rounded-2xl border border-white/[0.07] bg-gradient-to-r from-white/[0.04] to-transparent p-4">
+          <div className="text-sm font-medium">
+            {pack.brand} {pack.model} ({pack.chassis}) · the same jobs the dealer runs in {pack.dealer_tool}
+          </div>
+          <ul className="mt-2 space-y-1 text-xs leading-relaxed text-muted-foreground">
+            {pack.notes.map((n) => (
+              <li key={n}>· {n}</li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       <div className="mb-6 grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
         {tiers.map((t, i) => (

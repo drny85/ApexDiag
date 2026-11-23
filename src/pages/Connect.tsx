@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { ArrowRight, Bluetooth, Car, CheckCircle2, CircleAlert, Gauge as GaugeIcon, Loader2, Plug, Power, ScanSearch } from "lucide-react";
+import { ArrowRight, BadgeCheck, Bluetooth, Car, CheckCircle2, CircleAlert, Gauge as GaugeIcon, Loader2, Plug, Power, Radar, ScanSearch } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import PageHeader from "@/components/PageHeader";
@@ -8,10 +8,12 @@ import { api, asCmdError, type DiscoveredDevice } from "@/lib/tauri";
 import { fmt } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import { HandshakeFlow, ObdPortScene } from "@/components/illustrations/Connect";
+import { BrandChip, CarSide, MAKE_ACCENT } from "@/components/illustrations/Vehicle";
+import type { Pack, VinInfo } from "@/lib/tauri";
 import type { PageId } from "@/App";
 
 export default function Connect({ go }: { go: (p: PageId) => void }) {
-  const { connection, setConnection } = useDiag();
+  const { connection, setConnection, catalog } = useDiag();
   const [devices, setDevices] = useState<DiscoveredDevice[]>([]);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -73,34 +75,64 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
       {connection ? (
         <VehicleSummary go={go} />
       ) : (
-        <div className="grid gap-3 md:grid-cols-3">
-          {devices.map((d) => {
-            const sim = d.transport.kind === "simulator";
-            const Icon = sim ? Car : Bluetooth;
-            return (
-              <div
-                key={d.id}
-                className={cn(
-                  "group relative flex flex-col rounded-2xl border border-white/[0.07] bg-gradient-to-b from-white/[0.04] to-transparent p-5 transition",
-                  d.available ? "hover:border-cyan-400/30 hover:from-cyan-400/[0.06]" : "opacity-60",
-                )}
-              >
-                <div className="mb-4 flex items-center justify-between">
-                  <div className="grid size-10 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
-                    <Icon className="size-5 text-cyan-300" />
+        <>
+          <SectionTitle title="Adapters" hint="Your own adapter, plugged into the car." />
+          <div className="mb-7 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+            {devices
+              .filter((d) => d.transport.kind !== "simulator")
+              .map((d) => (
+                <div key={d.id} className={cn("flex flex-col rounded-2xl border border-white/[0.07] bg-white/[0.02] p-5", !d.available && "opacity-60")}>
+                  <div className="mb-4 flex items-center justify-between">
+                    <div className="grid size-10 place-items-center rounded-xl bg-white/5 ring-1 ring-white/10">
+                      <Bluetooth className="size-5 text-cyan-300" />
+                    </div>
+                    <Badge variant="muted">Next step</Badge>
                   </div>
-                  {sim ? <Badge variant="warn">Demo data</Badge> : <Badge variant="muted">Next step</Badge>}
+                  <div className="font-medium">{d.name}</div>
+                  <p className="mt-1 flex-1 text-sm text-muted-foreground">{d.detail}</p>
+                  <Button className="mt-5" disabled={!d.available || busy !== null} onClick={() => connect(d)}>
+                    <Plug /> Connect
+                  </Button>
                 </div>
-                <div className="font-medium">{d.name}</div>
-                <p className="mt-1 flex-1 text-sm text-muted-foreground">{d.detail}</p>
-                <Button className="mt-5" disabled={!d.available || busy !== null} onClick={() => connect(d)}>
-                  {busy === d.id ? <Loader2 className="animate-spin" /> : <Plug />}
-                  {busy === d.id ? "Connecting" : "Connect"}
-                </Button>
-              </div>
-            );
-          })}
-        </div>
+              ))}
+          </div>
+          <SectionTitle title="Practice cars" hint="Simulated cars with invented faults, one per vehicle pack. Nothing here touches a real car." />
+          <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            {devices
+              .filter((d) => d.transport.kind === "simulator")
+              .map((d) => {
+                const pack = catalog?.packs.find((p) => p.id === SIM_PACK[d.id]);
+                const accent = pack ? MAKE_ACCENT[pack.make] : "#67e8f9";
+                return (
+                  <div
+                    key={d.id}
+                    className="group relative flex flex-col overflow-hidden rounded-2xl border border-white/[0.07] bg-gradient-to-b from-white/[0.04] to-transparent p-5 transition hover:border-white/20"
+                  >
+                    <div
+                      className="absolute -right-10 -top-16 size-48 rounded-full opacity-0 blur-3xl transition group-hover:opacity-100"
+                      style={{ backgroundColor: `${accent}1f` }}
+                    />
+                    <div className="relative flex items-center justify-between">
+                      {pack ? <BrandChip make={pack.make} brand={pack.brand} /> : <Car className="size-4" />}
+                      <Badge variant="warn">Demo</Badge>
+                    </div>
+                    {pack && <CarSide body={pack.body} accent={accent} scanning={busy === d.id} className="relative my-3 w-full" />}
+                    <div className="relative font-medium">{d.name.replace(/^Demo /, "")}</div>
+                    {pack && (
+                      <div className="relative mt-0.5 text-[11px] text-muted-foreground">
+                        {pack.years} · {pack.modules.length} modules · {pack.make === "bmw" ? "KWP2000" : "UDS"}
+                      </div>
+                    )}
+                    <p className="relative mt-2 flex-1 text-sm leading-snug text-muted-foreground">{d.detail.replace(/ Practice car, fake data\.$/, "")}</p>
+                    <Button className="relative mt-4" variant="secondary" disabled={busy !== null} onClick={() => connect(d)}>
+                      {busy === d.id ? <Loader2 className="animate-spin" /> : <Plug />}
+                      {busy === d.id ? "Connecting" : "Connect"}
+                    </Button>
+                  </div>
+                );
+              })}
+          </div>
+        </>
       )}
 
       {!connection && !busy && lines.length === 0 && <PlugInGuide />}
@@ -127,10 +159,27 @@ export default function Connect({ go }: { go: (p: PageId) => void }) {
   );
 }
 
+/** Which pack each practice car uses. */
+const SIM_PACK: Record<string, string> = {
+  "sim:bmw_x5": "bmw_e70",
+  "sim:mercedes_gle": "mercedes_w167",
+  "sim:toyota_camry": "toyota_xv70",
+  "sim:honda_accord": "honda_accord",
+};
+
+function SectionTitle({ title, hint }: { title: string; hint: string }) {
+  return (
+    <div className="mb-3 flex items-baseline gap-3">
+      <h3 className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">{title}</h3>
+      <span className="text-xs text-muted-foreground/70">{hint}</span>
+    </div>
+  );
+}
+
 function PlugInGuide() {
   const steps = [
     ["Ignition on", "Press Start once without your foot on the brake. The engine doesn't need to run."],
-    ["Plug in the adapter", "Driver footwell, under the dashboard to the left of the steering column, near the hood release."],
+    ["Plug in the adapter", "Under the dashboard on the driver's side, usually within reach of your left knee. On many BMWs it sits by the hood release."],
     ["Wait for its light", "The adapter's LED comes on when it has power from the car."],
     ["Pick it above", "ApexDiag finds it over Bluetooth and does the rest."],
   ];
@@ -138,7 +187,7 @@ function PlugInGuide() {
     <section className="mt-6 grid items-center gap-6 overflow-hidden rounded-2xl border border-white/[0.07] bg-gradient-to-br from-white/[0.03] to-transparent p-6 lg:grid-cols-[1.1fr_1fr]">
       <ObdPortScene className="w-full max-w-lg" />
       <div>
-        <h3 className="text-sm font-semibold">Plugging in on the X5</h3>
+        <h3 className="text-sm font-semibold">Plugging in</h3>
         <ol className="mt-3 space-y-3">
           {steps.map(([t, d], i) => (
             <li key={t} className="flex gap-3">
@@ -162,10 +211,22 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
   const { connection, live } = useDiag();
   if (!connection) return null;
   const c = connection;
+  const pack = c.vehicle.pack;
+  const bmw = pack.make === "bmw";
   const facts: [string, React.ReactNode][] = [
     ["Adapter", c.adapter.version],
     ["Protocol", "ISO 15765-4 CAN · 11-bit · 500 kbit/s"],
-    ["BMW module access", c.adapter.supports_extended_addressing ? "Supported (extended addressing)" : "Not supported by this adapter"],
+    [
+      "Module access",
+      bmw
+        ? c.adapter.supports_extended_addressing
+          ? "KWP2000 over D-CAN (extended addressing)"
+          : "Not supported by this adapter"
+        : pack.make === "generic"
+          ? "Generic OBD-II only"
+          : "UDS (ISO 14229) on 11-bit CAN",
+    ],
+    ["Vehicle pack", pack.make === "generic" ? "None yet" : `${pack.brand} ${pack.chassis} · ${pack.layout === "documented" ? "documented addresses" : "demo layout"}`],
     ["Live parameters", `${c.supported_pids.length} supported`],
     ["Battery", `${fmt(live.get(0x42) ?? c.battery_v ?? undefined, 2)} V`],
   ];
@@ -177,8 +238,13 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
           <div className="flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-muted-foreground">
             <CheckCircle2 className="size-3.5 text-emerald-400" /> Connected {c.simulated && <Badge variant="warn" className="ml-1">Demo data</Badge>}
           </div>
-          <div className="mt-3 text-2xl font-semibold">{c.simulated ? "BMW X5 (E70) · 2008" : vehicleTitle(c.vin)}</div>
+          <div className="mt-3 flex items-center gap-3">
+            <BrandChip make={pack.make} brand={pack.brand} />
+            <span className="text-xs text-muted-foreground">Works like {pack.dealer_tool}</span>
+          </div>
+          <div className="mt-2 text-2xl font-semibold">{vehicleTitle(pack, c.vehicle.vin_info)}</div>
           <div className="mt-1 font-mono text-sm tracking-wider text-cyan-200/80">VIN {c.vin ?? "unavailable"}</div>
+          {c.vehicle.demo_story && <p className="mt-2 max-w-lg text-sm text-muted-foreground">{c.vehicle.demo_story}</p>}
           <dl className="mt-6 grid grid-cols-2 gap-x-6 gap-y-4 text-sm">
             {facts.map(([k, v]) => (
               <div key={k}>
@@ -187,6 +253,7 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
               </div>
             ))}
           </dl>
+          {c.vehicle.vin_info && <VinCard info={c.vehicle.vin_info} />}
         </div>
       </div>
       <div className="flex flex-col gap-4">
@@ -218,9 +285,22 @@ function VehicleSummary({ go }: { go: (p: PageId) => void }) {
           </div>
           <HandshakeFlow step={3} className="mx-auto mt-1 h-20 w-full" />
         </div>
+        <button
+          onClick={() => go("quicktest")}
+          className="group flex items-center gap-4 rounded-2xl border border-cyan-400/25 bg-gradient-to-r from-cyan-400/[0.12] to-transparent p-4 text-left transition hover:border-cyan-300/50"
+        >
+          <div className="grid size-10 place-items-center rounded-xl bg-cyan-400/15 ring-1 ring-cyan-300/30">
+            <Radar className="size-5 text-cyan-200" />
+          </div>
+          <div className="flex-1">
+            <div className="font-medium">Run a Quick Test</div>
+            <div className="text-xs text-muted-foreground">Every module, every fault, emissions readiness. About a minute on a real car.</div>
+          </div>
+          <ArrowRight className="size-4 text-cyan-200 transition group-hover:translate-x-0.5" />
+        </button>
         <div className="grid grid-cols-2 gap-3">
           <QuickAction icon={GaugeIcon} label="Live dashboard" onClick={() => go("dashboard")} />
-          <QuickAction icon={ScanSearch} label="Scan all modules" onClick={() => go("modules")} />
+          <QuickAction icon={ScanSearch} label="Modules" onClick={() => go("modules")} />
         </div>
       </div>
     </div>
@@ -239,13 +319,79 @@ function QuickAction({ icon: Icon, label, onClick }: { icon: typeof Car; label: 
   );
 }
 
-/** Model year from VIN position 10 (1980-2009 / 2010-2039 cycle, best guess for current cars). */
-function vehicleTitle(vin: string | null) {
-  const codes = "ABCDEFGHJKLMNPRSTVWXY123456789";
-  const ch = vin?.[9];
-  const idx = ch ? codes.indexOf(ch) : -1;
-  if (idx < 0) return "Connected vehicle";
-  const year = 1980 + idx + (1980 + idx + 30 <= new Date().getFullYear() + 1 ? 30 : 0);
-  const maker = vin?.startsWith("WBA") || vin?.startsWith("5UX") || vin?.startsWith("WBS") ? "BMW" : "Vehicle";
-  return `${maker} · ${year}`;
+function vehicleTitle(pack: Pack, vin: VinInfo | null) {
+  if (pack.make === "generic") return vin?.manufacturer ? `${vin.manufacturer} vehicle` : "OBD-II vehicle";
+  const year = vin?.model_year ? ` · ${vin.model_year}` : "";
+  return `${pack.brand} ${pack.model} (${pack.chassis})${year}`;
+}
+
+/** What the VIN itself says, decoded without a database. */
+function VinCard({ info }: { info: VinInfo }) {
+  const rows: [string, string][] = info.demo
+    ? [
+        ["Manufacturer", "Practice car"],
+        ["Model year", "n/a"],
+      ]
+    : [
+        ["Manufacturer", info.manufacturer ?? `Unknown (${info.wmi})`],
+        ["Built in", [info.country, info.region].filter(Boolean).join(", ")],
+        ["Model year", info.model_year ? String(info.model_year) : "Unknown"],
+        ["Plant code", info.plant ?? "-"],
+        ["Serial", info.serial || "-"],
+      ];
+  const check =
+    info.demo || info.check_digit_ok === null
+      ? null
+      : info.check_digit_ok
+        ? { ok: true, text: "Check digit valid" }
+        : info.check_digit_required
+          ? { ok: false, text: "Check digit does not match: the VIN may be misread or altered" }
+          : { ok: true, text: "Check digit not used by this maker" };
+  return (
+    <div className="mt-6 rounded-xl border border-white/[0.07] bg-black/20 p-4">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">VIN decode</span>
+        {info.demo ? (
+          <Badge variant="warn">Demo VIN</Badge>
+        ) : (
+          check && (
+            <Badge variant={check.ok ? "ok" : "danger"}>
+              <BadgeCheck /> {check.text}
+            </Badge>
+          )
+        )}
+      </div>
+      <div className="mb-3 flex font-mono text-[13px] tracking-[0.12em]">
+        {info.vin.split("").map((ch, i) => (
+          <span
+            key={i}
+            title={i < 3 ? "World manufacturer" : i < 8 ? "Vehicle description" : i === 8 ? "Check digit" : i === 9 ? "Model year" : i === 10 ? "Plant" : "Serial"}
+            className={cn(
+              "px-[1px]",
+              info.demo
+                ? "text-foreground/60"
+                : [
+                    i < 3 && "text-cyan-300",
+                    i >= 3 && i < 8 && "text-foreground/70",
+                    i === 8 && "text-violet-300",
+                    i === 9 && "text-emerald-300",
+                    i === 10 && "text-amber-300",
+                    i > 10 && "text-foreground/50",
+                  ],
+            )}
+          >
+            {ch}
+          </span>
+        ))}
+      </div>
+      <dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-3">
+        {rows.map(([k, v]) => (
+          <div key={k}>
+            <dt className="text-muted-foreground">{k}</dt>
+            <dd className="mt-0.5 font-medium">{v}</dd>
+          </div>
+        ))}
+      </dl>
+    </div>
+  );
 }

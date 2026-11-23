@@ -5,7 +5,9 @@
 //! the disk space.
 
 use protocol_core::bmw_e70;
+use protocol_core::snapshot::{Format, RecordKind};
 use protocol_core::snapshot::{RecordValue, Snapshot, SnapshotFault, SnapshotKind};
+use protocol_core::vehicle::Pack;
 use std::fs;
 use std::io;
 use std::path::PathBuf;
@@ -71,7 +73,7 @@ type DemoEntry = (
     u64,
     &'static str,
     bmw_e70::Module,
-    Vec<(u8, Vec<u8>)>,
+    Vec<(u16, Vec<u8>)>,
     Vec<&'static str>,
 );
 
@@ -175,7 +177,7 @@ pub fn seed_demo_history(store: &SnapshotStore, vin: &str, now_ms: u64) -> io::R
             identification: Some(format!("SIM {} 0000000 HW01 SW01", module.name)),
             records: records
                 .into_iter()
-                .map(|(lid, raw)| RecordValue { lid, raw })
+                .map(|(id, raw)| RecordValue { id, raw })
                 .collect(),
             faults: faults
                 .into_iter()
@@ -184,6 +186,66 @@ pub fn seed_demo_history(store: &SnapshotStore, vin: &str, now_ms: u64) -> io::R
                     status: 0x24,
                 })
                 .collect(),
+            missing: vec![],
+        })?;
+    }
+    Ok(())
+}
+
+/// Demo history for the other demo cars: one snapshot per module from a
+/// month ago, when learned values were smaller and one setting differed,
+/// so Compare and Restore have something to show. Values are invented.
+pub fn seed_generic_history(
+    store: &SnapshotStore,
+    vin: &str,
+    pack: &Pack,
+    current: &[((u8, u16), Vec<u8>)],
+    now_ms: u64,
+) -> io::Result<()> {
+    if !store.list(vin).is_empty() {
+        return Ok(());
+    }
+    let at = now_ms - 31 * DAY_MS - 2 * 60 * 60 * 1000;
+    let mut changed_one_setting = false;
+    for module in pack.modules {
+        let mut records = Vec::new();
+        for ((addr, id), raw) in current.iter().filter(|((a, _), _)| *a == module.address) {
+            let Some(def) = pack.records_for(*addr).find(|d| d.id == *id) else {
+                continue;
+            };
+            let mut old = raw.clone();
+            match (def.kind, def.format) {
+                // Learned values were smaller a month ago.
+                (RecordKind::Adaptation, Format::Number { bytes: 2, .. }) => {
+                    let v = i16::from_be_bytes([raw[0], raw[1]]);
+                    old = ((v as i32 * 2 / 5) as i16).to_be_bytes().to_vec();
+                }
+                // One owner setting was different before the shop visit.
+                (RecordKind::Coding, Format::Choice { options }) if !changed_one_setting => {
+                    if let Some((other, _)) = options.iter().find(|(o, _)| *o != raw[0]) {
+                        old = vec![*other];
+                        changed_one_setting = true;
+                    }
+                }
+                _ => {}
+            }
+            records.push(RecordValue { id: *id, raw: old });
+        }
+        if records.is_empty() {
+            continue;
+        }
+        store.save(&Snapshot {
+            id: Snapshot::make_id(at, module.address),
+            vin: vin.into(),
+            module_address: module.address,
+            module_name: module.name.into(),
+            taken_at_ms: at,
+            kind: SnapshotKind::Demo,
+            reason: "Pre-purchase inspection (demo history)".into(),
+            simulated: true,
+            identification: Some(format!("SIM-{}-0001 SW 01.02", module.name)),
+            records,
+            faults: vec![],
             missing: vec![],
         })?;
     }
@@ -224,5 +286,38 @@ mod tests {
         assert_eq!(store.get(&first.vin, &first.id).as_ref(), Some(first));
         assert_eq!(store.get(&first.vin, "../../etc/passwd"), None);
         assert!(store.list("OTHERVIN").is_empty());
+    }
+
+    #[test]
+    fn seeds_other_demo_cars_from_their_current_values() {
+        use protocol_core::packs::toyota_xv70::{BODY, ECM, METER, PACK};
+        let store = temp_store();
+        let vin = "SIMULATED0CAM0003";
+        let current = vec![
+            ((ECM.address, 0x2101), 420i16.to_be_bytes().to_vec()),
+            ((BODY.address, 0x2201), vec![1]),
+            ((BODY.address, 0x2203), vec![15]),
+            ((METER.address, 0x2301), vec![1]),
+        ];
+        seed_generic_history(&store, vin, &PACK, &current, 1_800_000_000_000).unwrap();
+        let all = store.list(vin);
+        assert_eq!(all.len(), 3);
+        let ecm = all
+            .iter()
+            .find(|s| s.module_address == ECM.address)
+            .unwrap();
+        // Learned values were smaller a month ago.
+        assert_eq!(ecm.record(0x2101), Some(&168i16.to_be_bytes()[..]));
+        // Exactly one owner setting differs, so Restore has something to do.
+        let changed = all
+            .iter()
+            .flat_map(|s| s.records.iter().map(move |r| (s.module_address, r)))
+            .filter(|(a, r)| {
+                current
+                    .iter()
+                    .any(|((ca, id), raw)| ca == a && *id == r.id && *raw != r.raw && *id != 0x2101)
+            })
+            .count();
+        assert_eq!(changed, 1);
     }
 }

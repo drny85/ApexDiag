@@ -15,7 +15,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::bmw_e70::JobStatus;
+use crate::vehicle::JobStatus;
 
 /// Coding (writable) or adaptation (learned, compare only).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -49,8 +49,9 @@ pub enum Format {
 pub struct RecordDef {
     /// Module address.
     pub module: u8,
-    /// KWP2000 local identifier (`21 lid` to read, `3B lid` to write).
-    pub lid: u8,
+    /// Record identifier: a KWP2000 local id (`21 id` / `3B id`, one byte)
+    /// or a UDS data identifier (`22 id` / `2E id`, two bytes).
+    pub id: u16,
     pub name: &'static str,
     pub kind: RecordKind,
     pub format: Format,
@@ -151,7 +152,8 @@ pub enum SnapshotKind {
 /// One record's raw value as read.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RecordValue {
-    pub lid: u8,
+    #[serde(alias = "lid")]
+    pub id: u16,
     pub raw: Vec<u8>,
 }
 
@@ -180,7 +182,7 @@ pub struct Snapshot {
     pub records: Vec<RecordValue>,
     pub faults: Vec<SnapshotFault>,
     /// Records that were expected but could not be read.
-    pub missing: Vec<u8>,
+    pub missing: Vec<u16>,
 }
 
 impl Snapshot {
@@ -188,10 +190,10 @@ impl Snapshot {
         format!("{taken_at_ms}-{address:02x}")
     }
 
-    pub fn record(&self, lid: u8) -> Option<&[u8]> {
+    pub fn record(&self, id: u16) -> Option<&[u8]> {
         self.records
             .iter()
-            .find(|r| r.lid == lid)
+            .find(|r| r.id == id)
             .map(|r| r.raw.as_slice())
     }
 
@@ -205,7 +207,7 @@ impl Snapshot {
 /// How one record differs between two snapshots.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct RecordChange {
-    pub lid: u8,
+    pub id: u16,
     pub name: &'static str,
     pub kind: RecordKind,
     pub explain: &'static str,
@@ -248,15 +250,15 @@ pub fn diff(from: &Snapshot, to: &Snapshot, defs: &[RecordDef]) -> ModuleDiff {
         .iter()
         .filter(|d| d.module == from.module_address)
         .map(|d| {
-            let a = from.record(d.lid);
-            let b = to.record(d.lid);
+            let a = from.record(d.id);
+            let b = to.record(d.id);
             let (va, vb) = (a.and_then(|r| d.number(r)), b.and_then(|r| d.number(r)));
             let delta = match (va, vb) {
                 (Some(x), Some(y)) if matches!(d.format, Format::Number { .. }) => Some(y - x),
                 _ => None,
             };
             RecordChange {
-                lid: d.lid,
+                id: d.id,
                 name: d.name,
                 kind: d.kind,
                 explain: d.explain,
@@ -297,7 +299,7 @@ pub fn diff(from: &Snapshot, to: &Snapshot, defs: &[RecordDef]) -> ModuleDiff {
 /// One write needed to put a module's coding back.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Write {
-    pub lid: u8,
+    pub id: u16,
     pub name: &'static str,
     pub from: String,
     pub to: String,
@@ -311,13 +313,13 @@ pub fn restore_plan(current: &Snapshot, target: &Snapshot, defs: &[RecordDef]) -
     defs.iter()
         .filter(|d| d.module == target.module_address && d.kind == RecordKind::Coding)
         .filter_map(|d| {
-            let want = target.record(d.lid)?;
+            let want = target.record(d.id)?;
             if want.len() != d.len() {
                 return None;
             }
-            let have = current.record(d.lid);
+            let have = current.record(d.id);
             (have != Some(want)).then(|| Write {
-                lid: d.lid,
+                id: d.id,
                 name: d.name,
                 from: have
                     .map(|h| d.display(h))
@@ -338,7 +340,7 @@ mod tests {
     const DEFS: &[RecordDef] = &[
         RecordDef {
             module: 0x72,
-            lid: 0x20,
+            id: 0x20,
             name: "Daytime running lights",
             kind: RecordKind::Coding,
             format: Format::Choice { options: ONOFF },
@@ -347,7 +349,7 @@ mod tests {
         },
         RecordDef {
             module: 0x72,
-            lid: 0x21,
+            id: 0x21,
             name: "Comfort turn signal",
             kind: RecordKind::Coding,
             format: Format::Number {
@@ -362,7 +364,7 @@ mod tests {
         },
         RecordDef {
             module: 0x72,
-            lid: 0x22,
+            id: 0x22,
             name: "Fuel trim",
             kind: RecordKind::Adaptation,
             format: Format::Number {
@@ -390,15 +392,15 @@ mod tests {
             identification: Some("FRM HW01".into()),
             records: vec![
                 RecordValue {
-                    lid: 0x20,
+                    id: 0x20,
                     raw: vec![dlr],
                 },
                 RecordValue {
-                    lid: 0x21,
+                    id: 0x21,
                     raw: vec![flashes],
                 },
                 RecordValue {
-                    lid: 0x22,
+                    id: 0x22,
                     raw: trim.to_be_bytes().to_vec(),
                 },
             ],
@@ -430,10 +432,10 @@ mod tests {
         let d = diff(&before, &after, DEFS);
         assert_eq!(d.changed, 3);
         assert_eq!(d.restorable, 2);
-        let trim = d.records.iter().find(|r| r.lid == 0x22).unwrap();
+        let trim = d.records.iter().find(|r| r.id == 0x22).unwrap();
         assert!((trim.delta.unwrap() - 6.2).abs() < 1e-9);
         assert_eq!(trim.before.as_deref(), Some("+1.60 %"));
-        let dlr = d.records.iter().find(|r| r.lid == 0x20).unwrap();
+        let dlr = d.records.iter().find(|r| r.id == 0x20).unwrap();
         assert_eq!(dlr.delta, None, "choices have no delta");
         assert_eq!(d.faults.appeared, vec!["2A82"]);
         assert!(d.faults.gone.is_empty());
@@ -455,7 +457,7 @@ mod tests {
         let current = snap(2, 1, 3, 780, &["2A82"]);
         let plan = restore_plan(&current, &target, DEFS);
         assert_eq!(plan.len(), 1, "adaptations and equal values are skipped");
-        assert_eq!(plan[0].lid, 0x20);
+        assert_eq!(plan[0].id, 0x20);
         assert_eq!(plan[0].raw, vec![0]);
         assert_eq!((plan[0].from.as_str(), plan[0].to.as_str()), ("On", "Off"));
 
@@ -467,10 +469,10 @@ mod tests {
     #[test]
     fn restore_skips_records_missing_from_the_target() {
         let mut target = snap(1, 0, 3, 160, &[]);
-        target.records.retain(|r| r.lid != 0x20);
+        target.records.retain(|r| r.id != 0x20);
         let current = snap(2, 1, 5, 160, &[]);
         let plan = restore_plan(&current, &target, DEFS);
-        assert_eq!(plan.iter().map(|w| w.lid).collect::<Vec<_>>(), vec![0x21]);
+        assert_eq!(plan.iter().map(|w| w.id).collect::<Vec<_>>(), vec![0x21]);
     }
 
     #[test]

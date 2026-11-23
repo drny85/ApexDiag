@@ -10,11 +10,12 @@ import { useDiag } from "@/lib/store";
 import { api, asCmdError, type ModuleDetail, type ModuleInfo, type ModuleScan } from "@/lib/tauri";
 import { SYSTEM_LABEL, hex } from "@/lib/format";
 import { cn } from "@/lib/utils";
-import CarMap from "@/components/illustrations/CarMap";
+import CarMap, { statusFromScan } from "@/components/illustrations/CarMap";
+import { linkText } from "@/lib/format";
 import type { PageId } from "@/App";
 
 export default function Modules({ go }: { go: (p: PageId) => void }) {
-  const { connection, catalog } = useDiag();
+  const { connection } = useDiag();
   const [scan, setScan] = useState<ModuleScan[] | null>(null);
   const [scanning, setScanning] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -45,7 +46,9 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
     }
   };
 
-  const modules = catalog?.modules ?? [];
+  const pack = connection.vehicle.pack;
+  const modules = pack.modules;
+  const scannable = new Set(connection.vehicle.scan_addresses);
   const bySystem = Object.keys(SYSTEM_LABEL)
     .map((s) => ({ system: s, list: modules.filter((m) => m.system === s) }))
     .filter((g) => g.list.length);
@@ -56,7 +59,7 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
     <div>
       <PageHeader
         title="Modules"
-        subtitle="The E70 has a control unit for each system. A scan asks every address which modules are fitted and how many faults each has stored."
+        subtitle={`The ${pack.brand} ${pack.model} (${pack.chassis}) has a control unit for each system. A scan asks every one whether it is fitted and how many faults it has stored.`}
         actions={
           <Button onClick={runScan} disabled={scanning}>
             {scanning ? <Loader2 className="animate-spin" /> : <ScanSearch />} {scan ? "Re-scan" : "Scan all modules"}
@@ -66,12 +69,25 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
 
       {scan && (
         <div className="mb-5 grid grid-cols-3 gap-3">
-          <Stat label="Modules answered" value={`${found} / ${modules.length}`} />
+          <Stat label="Modules answered" value={`${found} / ${scannable.size}`} />
           <Stat label="With stored faults" value={String(withFaults)} tone={withFaults ? "warn" : "ok"} />
           <Stat label="Total faults" value={String(scan.reduce((n, s) => n + (s.faults ?? 0), 0))} tone={withFaults ? "warn" : "ok"} />
         </div>
       )}
       {error && <p className="mb-4 text-sm text-rose-300">{error}</p>}
+      {pack.make === "generic" && (
+        <Empty icon={Cpu} title="No vehicle pack for this car yet">
+          <p className="mt-1 max-w-md text-sm text-muted-foreground">
+            Live data, engine codes, readiness and freeze frame work on any OBD-II car. Reading every module needs a pack for the brand.
+          </p>
+        </Empty>
+      )}
+      {!connection.simulated && pack.layout === "demo" && (
+        <p className="mb-4 rounded-xl border border-sky-400/20 bg-sky-400/[0.05] p-3 text-sm text-sky-50/90">
+          This pack's module addresses are not confirmed on a real {pack.brand} yet, so only the engine and transmission (standard OBD-II addresses) are scanned.
+          The rest are shown for orientation.
+        </p>
+      )}
 
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
       <div className="space-y-6">
@@ -82,6 +98,7 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
               {list.map((m) => {
                 const s = scan?.find((x) => x.module.address === m.address);
                 const faults = s?.faults ?? 0;
+                const skipped = !scannable.has(m.address);
                 return (
                   <button
                     key={m.address}
@@ -92,6 +109,7 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
                       s?.present && faults === 0 && "border-emerald-400/15 bg-emerald-400/[0.03] hover:border-emerald-400/30",
                       s?.present && faults > 0 && "border-amber-400/25 bg-amber-400/[0.05] hover:border-amber-400/40",
                       s && !s.present && "border-white/[0.05] opacity-50",
+                      skipped && "opacity-50",
                       scanning && "animate-pulse",
                     )}
                   >
@@ -111,7 +129,8 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
                       </div>
                       <p className="mt-1 line-clamp-2 text-xs text-muted-foreground">{m.role}</p>
                       <div className="mt-2 font-mono text-[10px] text-muted-foreground/70">
-                        {m.name} · {hex(m.address)} · {s ? (s.present ? "answered" : "not fitted / no reply") : "not scanned"}
+                        {m.name} · {m.protocol === "uds" ? "UDS" : "KWP2000"} ·{" "}
+                        {skipped ? "address not verified" : s ? (s.present ? "answered" : "not fitted / no reply") : "not scanned"}
                       </div>
                     </div>
                   </button>
@@ -129,7 +148,13 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
           <Legend color="bg-slate-400" label="Not scanned" />
           <Legend color="bg-slate-600" label="No reply" />
         </div>
-        <CarMap modules={modules} scan={scan} scanning={scanning} onPick={setOpen} />
+        <CarMap
+          pack={pack}
+          modules={modules}
+          status={(a) => (scannable.has(a) ? statusFromScan(scan, a) : "skipped")}
+          scanning={scanning}
+          onPick={setOpen}
+        />
       </aside>
       </div>
 
@@ -191,7 +216,7 @@ function ModuleSheet({ module, onClose, onChanged }: { module: ModuleInfo | null
                 </DialogTitle>
                 <DialogDescription className="mt-1.5 leading-relaxed">{module.role}</DialogDescription>
                 <div className="mt-3 font-mono text-[11px] text-muted-foreground">
-                  Address {hex(module.address)} · replies on {hex(0x600 + module.address, 3)} · KWP2000 over D-CAN
+                  {linkText(module)}
                 </div>
               </div>
               <div className="flex-1 space-y-5 overflow-auto px-6 py-5">
@@ -224,7 +249,7 @@ function ModuleSheet({ module, onClose, onChanged }: { module: ModuleInfo | null
                                 <Badge variant="muted">status {hex(f.status)}</Badge>
                               </div>
                               <p className="mt-1 text-sm text-foreground/85">
-                                {f.description ?? "BMW fault text not in the database yet. The code and status are exact."}
+                                {f.description ?? `${connection?.vehicle.pack.brand ?? "Maker"} fault text not in the database yet. The code and status are exact.`}
                               </p>
                             </div>
                           ))}

@@ -18,6 +18,8 @@ pub const RESPONSE_IDS: std::ops::RangeInclusive<CanId> = 0x7E8..=0x7EF;
 pub enum Service {
     /// Live data.
     CurrentData = 0x01,
+    /// Values captured when an emissions fault was confirmed.
+    FreezeFrame = 0x02,
     /// Confirmed emissions codes (these turn the check-engine light on).
     StoredDtcs = 0x03,
     /// Clears codes and resets readiness monitors.
@@ -233,6 +235,131 @@ pub fn decode_mil_status(payload: &[u8]) -> Result<MilStatus, ProtocolError> {
     }
 }
 
+/// One emissions readiness monitor (service 01, PID 01, bytes B-D).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Monitor {
+    pub id: &'static str,
+    pub name: &'static str,
+    /// The car has this monitor.
+    pub supported: bool,
+    /// The self-test has finished since codes were last cleared.
+    pub complete: bool,
+    pub explain: &'static str,
+}
+
+/// Emissions readiness: what an inspection station checks. Monitors that
+/// are supported but not complete usually mean codes were cleared recently
+/// or the drive cycle has not been finished.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct Readiness {
+    pub mil_on: bool,
+    pub dtc_count: u8,
+    pub compression_ignition: bool,
+    pub monitors: Vec<Monitor>,
+}
+
+impl Readiness {
+    pub fn incomplete(&self) -> usize {
+        self.monitors
+            .iter()
+            .filter(|m| m.supported && !m.complete)
+            .count()
+    }
+}
+
+const CONTINUOUS: [(&str, &str, &str); 3] = [
+    (
+        "misfire",
+        "Misfire",
+        "Watches crankshaft speed for misfiring cylinders. Runs all the time.",
+    ),
+    (
+        "fuel",
+        "Fuel system",
+        "Checks that fuel trims stay within limits. Runs all the time.",
+    ),
+    (
+        "components",
+        "Comprehensive components",
+        "Checks sensors and actuators for open or short circuits. Runs all the time.",
+    ),
+];
+
+const SPARK: [(&str, &str, &str); 8] = [
+    ("catalyst", "Catalyst", "Compares the oxygen sensors before and after the catalytic converter to judge how well it stores oxygen."),
+    ("heated_catalyst", "Heated catalyst", "Checks the catalyst heater, on cars that have one."),
+    ("evap", "Evaporative system", "Leak-tests the fuel tank vapour system. Often the last to complete: it needs a cold start and a part-full tank."),
+    ("secondary_air", "Secondary air", "Checks the pump that blows air into the exhaust during cold starts."),
+    ("ac_refrigerant", "A/C refrigerant", "Obsolete; almost never supported."),
+    ("o2_sensor", "Oxygen sensors", "Checks how fast the oxygen sensors switch."),
+    ("o2_heater", "Oxygen sensor heaters", "Checks the heaters that bring the oxygen sensors up to temperature."),
+    ("egr", "EGR / VVT", "Checks exhaust gas recirculation, or variable valve timing on cars without EGR."),
+];
+
+/// Decodes PID 01 into readiness monitors (petrol layout; diesel monitors
+/// are reported by their raw position).
+pub fn decode_readiness(payload: &[u8]) -> Result<Readiness, ProtocolError> {
+    let [0x41, 0x01, a, b, c, d, ..] = *payload else {
+        return Err(ProtocolError::MalformedFrame("not a monitor status reply"));
+    };
+    let mut monitors = Vec::new();
+    for (i, (id, name, explain)) in CONTINUOUS.iter().enumerate() {
+        let supported = b & (1 << i) != 0;
+        monitors.push(Monitor {
+            id,
+            name,
+            supported,
+            complete: supported && b & (1 << (i + 4)) == 0,
+            explain,
+        });
+    }
+    for (i, (id, name, explain)) in SPARK.iter().enumerate() {
+        let supported = c & (1 << i) != 0;
+        monitors.push(Monitor {
+            id,
+            name,
+            supported,
+            complete: supported && d & (1 << i) == 0,
+            explain,
+        });
+    }
+    Ok(Readiness {
+        mil_on: a & 0x80 != 0,
+        dtc_count: a & 0x7F,
+        compression_ignition: b & 0x08 != 0,
+        monitors,
+    })
+}
+
+/// Service 02 request: `pid` as captured in freeze frame 0.
+pub fn freeze_frame_request(pid: u8) -> [u8; 3] {
+    [Service::FreezeFrame as u8, pid, 0x00]
+}
+
+/// Decodes a freeze-frame reply (`42 pid frame data...`) with the same
+/// formulas as live data.
+pub fn decode_freeze_frame(payload: &[u8]) -> Result<(u8, f64), ProtocolError> {
+    match payload {
+        [0x42, pid, _frame, data @ ..] => {
+            let mut live = vec![0x41, *pid];
+            live.extend_from_slice(data);
+            decode_current_data(&live)
+        }
+        _ => Err(ProtocolError::MalformedFrame("not a freeze-frame reply")),
+    }
+}
+
+/// The DTC that caused freeze frame 0 (service 02, PID 02).
+pub fn decode_freeze_frame_dtc(payload: &[u8]) -> Result<Option<String>, ProtocolError> {
+    match payload {
+        [0x42, 0x02, _frame, 0, 0, ..] => Ok(None),
+        [0x42, 0x02, _frame, hi, lo, ..] => Ok(Some(decode_dtc(*hi, *lo))),
+        _ => Err(ProtocolError::MalformedFrame(
+            "not a freeze-frame DTC reply",
+        )),
+    }
+}
+
 /// A generic OBD-II trouble code.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Dtc {
@@ -444,5 +571,39 @@ mod tests {
         for p in PIDS {
             assert!(!p.explain.is_empty() && p.max > p.min, "{:02X}", p.pid);
         }
+    }
+
+    #[test]
+    fn decodes_readiness_monitors() {
+        // MIL on, 2 codes; misfire/fuel/components supported, components
+        // incomplete; catalyst, evap, O2, O2 heater, EGR supported; evap
+        // and catalyst incomplete.
+        let r = decode_readiness(&[0x41, 0x01, 0x82, 0x47, 0xE5, 0x05]).unwrap();
+        assert!(r.mil_on);
+        assert_eq!(r.dtc_count, 2);
+        let get = |id: &str| r.monitors.iter().find(|m| m.id == id).unwrap().clone();
+        assert!(get("misfire").supported && get("misfire").complete);
+        assert!(get("components").supported && !get("components").complete);
+        assert!(get("catalyst").supported && !get("catalyst").complete);
+        assert!(get("evap").supported && !get("evap").complete);
+        assert!(!get("secondary_air").supported);
+        assert!(get("egr").supported && get("egr").complete);
+        assert_eq!(r.incomplete(), 3);
+    }
+
+    #[test]
+    fn decodes_freeze_frame() {
+        assert_eq!(freeze_frame_request(0x0C), [0x02, 0x0C, 0x00]);
+        let (pid, rpm) = decode_freeze_frame(&[0x42, 0x0C, 0x00, 0x21, 0x70]).unwrap();
+        assert_eq!(pid, 0x0C);
+        assert!((rpm - 2140.0).abs() < 0.01);
+        assert_eq!(
+            decode_freeze_frame_dtc(&[0x42, 0x02, 0x00, 0x01, 0x71]).unwrap(),
+            Some("P0171".into())
+        );
+        assert_eq!(
+            decode_freeze_frame_dtc(&[0x42, 0x02, 0x00, 0, 0]).unwrap(),
+            None
+        );
     }
 }
