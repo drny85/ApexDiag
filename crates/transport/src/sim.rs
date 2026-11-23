@@ -185,6 +185,9 @@ pub struct ElmSimulator {
     low_charge: bool,
     /// Demo only: when a one-off stumble started (seconds since start).
     stumble_at: Option<f64>,
+    /// Answers several PIDs per request (most CAN cars do). Tests turn it
+    /// off to act like a car that only takes one at a time.
+    pub multi_pid: bool,
     /// Requests seen, for tests.
     pub log: Vec<String>,
 }
@@ -221,6 +224,7 @@ impl ElmSimulator {
             cat_worn: false,
             low_charge: false,
             stumble_at: None,
+            multi_pid: true,
             trims: Trims {
                 module: 0,
                 bank1: 0,
@@ -711,6 +715,18 @@ impl ElmSimulator {
                 r.extend(data);
                 r
             }),
+            // Several PIDs in one request, as J1979 allows on CAN: the
+            // reply carries each supported one in turn.
+            [0x01, pids @ ..] if self.multi_pid && (2..=6).contains(&pids.len()) => {
+                let mut r = vec![0x41];
+                for &pid in pids {
+                    if let Some(data) = self.pid(pid) {
+                        r.push(pid);
+                        r.extend(data);
+                    }
+                }
+                (r.len() > 1).then_some(r)
+            }
             [0x02, pid, frame] => self.freeze_frame(*pid, *frame),
             [0x03] => Some(dtc_reply(0x43, &self.stored)),
             [0x07] => Some(dtc_reply(0x47, &self.pending)),

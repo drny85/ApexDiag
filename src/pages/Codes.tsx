@@ -86,7 +86,7 @@ export default function Codes({ go }: { go: (p: PageId) => void }) {
     <div>
       <PageHeader
         title="Fault Codes"
-        subtitle={t("Generic OBD-II codes, emissions readiness and freeze frame from the engine module. For {maker} codes from every module (body, brakes, transmission), open Modules or run a Quick Test.", { maker: connection.vehicle.pack.make === "generic" ? t("maker") : connection.vehicle.pack.brand })}
+        subtitle={t("Generic OBD-II codes, emissions readiness and freeze frame from the engine module. For {maker} codes from every module (body, brakes, transmission), open Modules or run a Full Scan.", { maker: connection.vehicle.pack.make === "generic" ? t("maker") : connection.vehicle.pack.brand })}
         actions={
           <>
             <Button variant="outline" onClick={load} disabled={loading}>

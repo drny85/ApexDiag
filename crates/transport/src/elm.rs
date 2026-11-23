@@ -51,6 +51,9 @@ pub struct ElmClient<T: HardwareTransport> {
     timeout: Duration,
     target: Target,
     info: Option<AdapterInfo>,
+    /// Whether the car answers several PIDs in one request. Unknown until
+    /// tried; a car that refuses is asked one PID at a time from then on.
+    multi_pid: Option<bool>,
 }
 
 impl<T: HardwareTransport> ElmClient<T> {
@@ -60,6 +63,7 @@ impl<T: HardwareTransport> ElmClient<T> {
             timeout: Duration::from_secs(3),
             target: Target::Unknown,
             info: None,
+            multi_pid: None,
         }
     }
 
@@ -207,6 +211,70 @@ impl<T: HardwareTransport> ElmClient<T> {
         Ok(obd2::decode_current_data(&payload)?.1)
     }
 
+    /// Reads several live values, up to six per request where the car
+    /// allows it (one round trip instead of six), else one at a time.
+    /// Values the car does not return are left out.
+    pub async fn read_pids(&mut self, pids: &[u8]) -> Vec<(u8, f64)> {
+        let mut out = Vec::with_capacity(pids.len());
+        if self.multi_pid != Some(false) {
+            for batch in pids.chunks(obd2::MAX_PIDS_PER_REQUEST) {
+                if batch.len() == 1 {
+                    if let Ok(v) = self.read_pid(batch[0]).await {
+                        out.push((batch[0], v));
+                    }
+                    continue;
+                }
+                let got = match self.obd_primary(&obd2::multi_pid_request(batch)).await {
+                    Ok(p) => obd2::decode_multi_pid(&p).ok(),
+                    Err(_) => None,
+                };
+                match got {
+                    Some(values) => {
+                        self.multi_pid = Some(true);
+                        // Anything the batch dropped gets one more try alone.
+                        for &pid in batch {
+                            match values.iter().find(|(p, _)| *p == pid) {
+                                Some(&v) => out.push(v),
+                                None => {
+                                    if let Ok(v) = self.read_pid(pid).await {
+                                        out.push((pid, v));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    None if self.multi_pid.is_none() => {
+                        // First try refused: this car wants one PID per request.
+                        self.multi_pid = Some(false);
+                        let done: Vec<u8> = out.iter().map(|(p, _)| *p).collect();
+                        let rest: Vec<u8> =
+                            pids.iter().copied().filter(|p| !done.contains(p)).collect();
+                        for pid in rest {
+                            if let Ok(v) = self.read_pid(pid).await {
+                                out.push((pid, v));
+                            }
+                        }
+                        return out;
+                    }
+                    None => {
+                        for &pid in batch {
+                            if let Ok(v) = self.read_pid(pid).await {
+                                out.push((pid, v));
+                            }
+                        }
+                    }
+                }
+            }
+            return out;
+        }
+        for &pid in pids {
+            if let Ok(v) = self.read_pid(pid).await {
+                out.push((pid, v));
+            }
+        }
+        out
+    }
+
     /// All Service 01 PIDs the engine module supports.
     pub async fn supported_pids(&mut self) -> Result<Vec<u8>> {
         let mut all = Vec::new();
@@ -255,12 +323,25 @@ impl<T: HardwareTransport> ElmClient<T> {
     /// Freeze frame 0: the code that stored it and the values captured at
     /// that moment. `None` when no freeze frame is stored.
     pub async fn read_freeze_frame(&mut self) -> Result<Option<FreezeFrame>> {
+        self.read_freeze_frame_of(None).await
+    }
+
+    /// Freeze frame 0, asking only for values in `supported` (the car's
+    /// supported live PIDs) when given, which skips requests that would
+    /// only come back empty.
+    pub async fn read_freeze_frame_of(
+        &mut self,
+        supported: Option<&[u8]>,
+    ) -> Result<Option<FreezeFrame>> {
         let payload = self.obd_primary(&obd2::freeze_frame_request(0x02)).await?;
         let Some(dtc) = obd2::decode_freeze_frame_dtc(&payload)? else {
             return Ok(None);
         };
         let mut values = Vec::new();
         for &pid in FREEZE_PIDS {
+            if supported.is_some_and(|s| !s.contains(&pid)) {
+                continue;
+            }
             match self.obd_primary(&obd2::freeze_frame_request(pid)).await {
                 Ok(p) => {
                     if let Ok((pid, v)) = obd2::decode_freeze_frame(&p) {
@@ -509,6 +590,38 @@ mod tests {
         let volts = c.read_pid(0x42).await.unwrap();
         assert!(volts > 13.5);
         assert!(c.battery_voltage().await.unwrap() > 13.0);
+    }
+
+    #[tokio::test]
+    async fn reads_several_pids_per_request() {
+        let mut c = client(SimEngine::Idling).await;
+        let pids = [0x0C, 0x0D, 0x05, 0x04, 0x06, 0x07, 0x0B, 0x42];
+        let v = c.read_pids(&pids).await;
+        assert_eq!(v.iter().map(|(p, _)| *p).collect::<Vec<_>>(), pids);
+        assert_eq!(c.multi_pid, Some(true));
+        let rpm = v[0].1;
+        assert!((650.0..800.0).contains(&rpm), "rpm {rpm}");
+        // Unsupported PIDs are simply left out.
+        let v = c.read_pids(&[0x05, 0xA6]).await;
+        assert_eq!(v.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn falls_back_to_one_pid_per_request() {
+        let mut c = client(SimEngine::Idling).await;
+        c.link_mut().multi_pid = false;
+        let pids = [0x0C, 0x0D, 0x05, 0x04, 0x06, 0x07, 0x0B, 0x42];
+        let v = c.read_pids(&pids).await;
+        assert_eq!(v.iter().map(|(p, _)| *p).collect::<Vec<_>>(), pids);
+        assert_eq!(c.multi_pid, Some(false));
+        // Once refused, it does not try a batch again.
+        let before = c.link_mut().log.len();
+        c.read_pids(&[0x05, 0x0C]).await;
+        let sent = &c.link_mut().log[before..];
+        assert!(
+            sent.iter().all(|l| l.split_whitespace().count() <= 2),
+            "{sent:?}"
+        );
     }
 
     #[tokio::test]

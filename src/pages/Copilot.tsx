@@ -84,7 +84,7 @@ export default function Copilot({ go }: { go: (p: PageId) => void }) {
       for (const { module, fault } of quickTestFaults(connection.vin)) {
         // The engine module reports its OBD codes again with a suffix (P0456-00): list them once.
         if (list.some((f) => f.module === null && fault.code.startsWith(f.code))) continue;
-        list.push({ code: fault.code, module: module.name, description: fault.description, source: `${module.name} · Quick Test` });
+        list.push({ code: fault.code, module: module.name, description: fault.description, source: `${module.name} · Full Scan` });
       }
       setFaults(list);
       setSelected((cur) => cur ?? (focus ? { ...focus, description: null, source: "Picked" } : (list[0] ?? null)));
@@ -117,7 +117,7 @@ export default function Copilot({ go }: { go: (p: PageId) => void }) {
         <aside className="space-y-4 self-start">
           <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-3">
             <h3 className="px-1 pb-2 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Faults on this car</h3>
-            {faults.length === 0 && <p className="px-1 py-2 text-sm text-muted-foreground">No engine codes stored. Run a Quick Test to include every module.</p>}
+            {faults.length === 0 && <p className="px-1 py-2 text-sm text-muted-foreground">No engine codes stored. Run a full scan to include every module.</p>}
             <div className="space-y-1">
               {faults.map((f) => {
                 const active = selected?.code === f.code && selected?.module === f.module;

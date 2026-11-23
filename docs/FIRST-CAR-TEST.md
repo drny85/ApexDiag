@@ -21,7 +21,7 @@ About 10 minutes. **Everything in this test only reads.** Nothing on the car is 
 6. **Save.** Tap **Save report and capture**. Two files are written: `car-test-<VIN>-<number>.json` (the results) and `.log` (every byte the adapter said).
 7. **Send both files back.** Open the **Files** app, then **On My iPad**, then **ApexDiag**. Long-press each file, then Share. Attach them in the ApexDiag project chat, or AirDrop them to the Mac.
 
-That's the whole test. If you want to look around afterwards, **Quick Test**, **Fault Codes** and **Live Data** are safe. Leave **Clear codes** and **Special Functions** alone on this first visit; we turn them on for this car once the capture confirms its modules.
+That's the whole test. If you want to look around afterwards, **Full Scan**, **Fault Codes** and **Live Data** are safe. Leave **Clear codes** and **Special Functions** alone on this first visit; we turn them on for this car once the capture confirms its modules.
 
 ## What the results mean
 
