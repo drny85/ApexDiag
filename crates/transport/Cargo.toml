@@ -1,0 +1,15 @@
+[package]
+name = "transport"
+description = "Hardware transport layer: BLE / Bluetooth serial, USB serial (K+DCAN) and DoIP"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+# Real adapters (btleplug, tokio-serial, DoIP over TcpStream) arrive in step 3,
+# behind features, so the core can be tested on any machine without radios.
