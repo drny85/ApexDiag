@@ -203,6 +203,22 @@ pub mod request {
         r
     }
 
+    /// UDS identifiers read for a module's identification line.
+    pub const UDS_IDENT_DIDS: [u16; 2] = [0xF187, 0xF189];
+
+    /// UDS ReadDataByIdentifier: `22 hi lo`.
+    pub fn uds_read_did(did: u16) -> Vec<u8> {
+        read_data_by_identifier(did)
+    }
+
+    /// UDS WriteDataByIdentifier: `2E hi lo data…`.
+    pub fn uds_write_did(did: u16, data: &[u8]) -> Vec<u8> {
+        let [hi, lo] = did.to_be_bytes();
+        let mut r = vec![sid::WRITE_DATA_BY_IDENTIFIER, hi, lo];
+        r.extend_from_slice(data);
+        r
+    }
+
     /// KWP2000 ReadECUIdentification, `1A 80` = full identification table.
     pub fn kwp_read_identification() -> Vec<u8> {
         vec![sid::KWP_READ_ECU_IDENTIFICATION, 0x80]
@@ -217,8 +233,8 @@ pub mod request {
 /// A fault code read from a BMW module.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct ModuleDtc {
-    /// Hex code as BMW tools display it: 4 digits on KWP2000 (`2A82`),
-    /// 6 digits on UDS (`CD840A`).
+    /// As the maker's tools display it: 4 hex digits on BMW KWP2000
+    /// (`2A82`), SAE code plus failure type on UDS (`P0171-00`).
     pub code: String,
     /// Raw status byte.
     pub status: u8,
@@ -286,7 +302,8 @@ pub fn parse_module_dtcs(protocol: Protocol, data: &[u8]) -> Result<Vec<ModuleDt
                 .0
                 .iter()
                 .map(|c| ModuleDtc {
-                    code: format!("{:02X}{:02X}{:02X}", c[0], c[1], c[2]),
+                    // SAE form plus the failure type byte: P0171-00.
+                    code: format!("{}-{:02X}", crate::obd2::decode_dtc(c[0], c[1]), c[2]),
                     status: c[3],
                     flags: Some(UdsDtcStatus::from_byte(c[3])),
                 })
@@ -346,8 +363,8 @@ mod tests {
 
     #[test]
     fn uds_fault_memory() {
-        let dtcs = parse_module_dtcs(Protocol::Uds, &[0x02, 0xFF, 0xCD, 0x84, 0x0A, 0x09]).unwrap();
-        assert_eq!(dtcs[0].code, "CD840A");
+        let dtcs = parse_module_dtcs(Protocol::Uds, &[0x02, 0xFF, 0x01, 0x71, 0x00, 0x09]).unwrap();
+        assert_eq!(dtcs[0].code, "P0171-00");
         let f = dtcs[0].flags.unwrap();
         assert!(f.test_failed && f.confirmed && !f.pending);
     }

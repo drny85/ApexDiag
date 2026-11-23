@@ -10,6 +10,7 @@
 //! the UI can explain it instead of hanging.
 
 use crate::bmw_e70::{Module, TESTER_ADDRESS, TESTER_ID};
+use crate::vehicle::Link;
 use crate::CanId;
 
 /// The init sequence sent after the link opens, in order.
@@ -54,6 +55,22 @@ pub fn bmw_module_setup(module: &Module) -> Vec<String> {
         format!("AT FC SD {:02X} 30 00 00", module.address),
         "AT FC SM 1".to_string(),
     ]
+}
+
+/// Commands that point the adapter at any module: BMW extended
+/// addressing, or a plain 11-bit request/response pair.
+pub fn module_setup(module: &Module) -> Vec<String> {
+    match module.link {
+        Link::BmwExtended => bmw_module_setup(module),
+        Link::Can11 { tx, rx } => vec![
+            format!("AT SH {tx:03X}"),
+            "AT CEA".to_string(),
+            format!("AT CRA {rx:03X}"),
+            format!("AT FC SH {tx:03X}"),
+            "AT FC SD 30 00 00".to_string(),
+            "AT FC SM 1".to_string(),
+        ],
+    }
 }
 
 /// Commands that undo [`bmw_module_setup`] and return to OBD-II broadcast.
