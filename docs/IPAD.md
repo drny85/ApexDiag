@@ -49,6 +49,7 @@ iPad as the run destination and press Run. Xcode builds the Rust code itself
 - Simulator build: `cd src-tauri/gen/apple && xcodebuild -scheme apexdiag_iOS -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' build`
   (the simulator has no Bluetooth; use the practice cars).
 - Live reload on a device: `bun tauri ios dev`.
+- First time at the car: follow [FIRST-CAR-TEST.md](FIRST-CAR-TEST.md).
 - The Xcode project is generated from `src-tauri/gen/apple/project.yml` with
   `xcodegen generate`. Edit `project.yml`, not the `.pbxproj`; do not re-run
   `tauri ios init`, which overwrites the Bluetooth permission string and the
