@@ -5,9 +5,12 @@
 //! `transport` crate moves those bytes over BLE, serial or TCP.
 
 pub mod bmw_e70;
+pub mod catalog;
+pub mod diag;
 pub mod elm327;
 pub mod isotp;
 pub mod obd2;
+pub mod session;
 
 /// A CAN identifier (11-bit for D-CAN / J1979 on the E70).
 pub type CanId = u32;
