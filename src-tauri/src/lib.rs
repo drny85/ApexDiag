@@ -12,6 +12,7 @@ mod timemachine;
 
 use protocol_core::catalog::{self, Function, Requirement, RiskTier, VehicleState};
 use protocol_core::copilot::{self, Check, CheckResult, Playbook, RepairRecord, Samples};
+use protocol_core::inspection::{self, Readings};
 use protocol_core::obd2::{self, Dtc, MilStatus, PidInfo, Readiness, Service};
 use protocol_core::replay;
 use protocol_core::snapshot::{
@@ -48,6 +49,8 @@ struct Inner {
     replay: replay::Buffer,
     /// A moment the driver marked that has not been saved yet.
     mark: Option<(u64, String)>,
+    /// Inspection report: what was read before the module scan.
+    inspection: Option<Readings>,
 }
 
 #[derive(Default)]
@@ -1660,15 +1663,10 @@ struct SavedTest {
 /// Saves the test report and a copy of the raw capture where the person can
 /// reach them: Documents/ApexDiag on a Mac, the app's folder in Files on an
 /// iPad.
-#[tauri::command]
-async fn save_car_test(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    report: serde_json::Value,
-) -> CmdResult<SavedTest> {
-    let inner = state.0.lock().await;
-    // Documents where the platform has one (the app's own folder on iPad),
-    // else ~/Documents, else the app's data folder.
+/// Where reports are saved: Documents where the platform has one (the
+/// app's own folder on iPad, visible in Files), else ~/Documents, else the
+/// app's data folder.
+fn documents_folder(app: &tauri::AppHandle) -> CmdResult<std::path::PathBuf> {
     let base = app
         .path()
         .document_dir()
@@ -1686,6 +1684,17 @@ async fn save_car_test(
             format!("Could not create {}: {e}", folder.display()),
         )
     })?;
+    Ok(folder)
+}
+
+#[tauri::command]
+async fn save_car_test(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    report: serde_json::Value,
+) -> CmdResult<SavedTest> {
+    let inner = state.0.lock().await;
+    let folder = documents_folder(&app)?;
     let stamp = now_ms();
     let name = inner.vin.clone().unwrap_or_else(|| "car".into());
     let report_path = folder.join(format!("car-test-{name}-{stamp}.json"));
@@ -1885,6 +1894,150 @@ async fn sim_stumble(state: State<'_, AppState>) -> CmdResult<()> {
     Ok(())
 }
 
+// ---- commands: Inspection report ----------------------------------------
+
+/// Step one of the inspection: everything except the module scan, which the
+/// page runs module by module (with `scan_module`) to show progress.
+/// Read-only.
+#[tauri::command]
+async fn inspection_start(state: State<'_, AppState>) -> CmdResult<()> {
+    let mut inner = state.0.lock().await;
+    let c = inner.client()?;
+    c.link_mut()
+        .capture_note("Inspection report: engine, readiness, battery");
+    let stored = c.read_obd_dtcs(Service::StoredDtcs).await.ok();
+    let pending = c
+        .read_obd_dtcs(Service::PendingDtcs)
+        .await
+        .unwrap_or_default();
+    let permanent = c
+        .read_obd_dtcs(Service::PermanentDtcs)
+        .await
+        .unwrap_or_default();
+    let readiness = c.read_readiness().await.ok();
+    let km_since_clear = c.read_pid(0x31).await.ok();
+    let warmups_since_clear = c.read_pid(0x30).await.ok();
+    let km_with_mil = c.read_pid(0x21).await.ok();
+    let odometer_km = c.read_pid(0xA6).await.ok();
+    let rpm = c.read_pid(0x0C).await.ok();
+    let battery_v = match c.read_pid(0x42).await {
+        Ok(v) => Some(v),
+        Err(_) => c.battery_voltage().await.ok().map(|v| v as f64),
+    };
+    let codes = |list: Vec<Dtc>| {
+        list.into_iter()
+            .map(|d| inspection::Code {
+                code: d.code,
+                description: d.description.map(Into::into),
+            })
+            .collect::<Vec<_>>()
+    };
+    inner.inspection = Some(Readings {
+        mil_on: readiness.as_ref().map(|r| r.mil_on),
+        stored: stored.map(codes),
+        pending: codes(pending),
+        permanent: codes(permanent),
+        readiness,
+        km_since_clear,
+        warmups_since_clear,
+        km_with_mil,
+        battery_v,
+        engine_running: rpm.map(|r| r > 300.0),
+        odometer_km,
+        modules: Vec::new(),
+        modules_not_scanned: 0,
+    });
+    Ok(())
+}
+
+#[derive(serde::Deserialize)]
+struct ScannedModule {
+    address: u8,
+    present: bool,
+    codes: Vec<inspection::Code>,
+}
+
+#[derive(Serialize)]
+struct InspectionView {
+    report: inspection::Report,
+    readings: Readings,
+    vin: Option<String>,
+    vehicle: String,
+    simulated: bool,
+    at_ms: u64,
+}
+
+/// Step two: grades everything read so far plus the page's module scan.
+#[tauri::command]
+async fn inspection_finish(
+    state: State<'_, AppState>,
+    modules: Vec<ScannedModule>,
+) -> CmdResult<InspectionView> {
+    let mut inner = state.0.lock().await;
+    let mut readings = inner
+        .inspection
+        .take()
+        .ok_or_else(|| CmdError::new("not_started", "Start the inspection first."))?;
+    let pack = inner.pack();
+    let allowed = scan_list(&inner);
+    readings.modules = modules
+        .into_iter()
+        .filter_map(|m| {
+            let info = pack.module(m.address)?;
+            Some(inspection::ModuleResult {
+                name: info.name.to_string(),
+                system: info.system,
+                present: m.present,
+                faults: m.codes,
+            })
+        })
+        .collect();
+    readings.modules_not_scanned = pack.modules.len().saturating_sub(allowed.len());
+    let report = inspection::grade(&readings);
+    inner.record(
+        "Inspection report",
+        "Whole car",
+        RiskTier::Read,
+        true,
+        report.summary.clone(),
+    );
+    Ok(InspectionView {
+        report,
+        readings,
+        vin: inner.vin.clone(),
+        vehicle: format!("{} {}", pack.brand, pack.model),
+        simulated: inner.simulated(),
+        at_ms: now_ms() as u64,
+    })
+}
+
+/// Saves a report the page has rendered (HTML for people, JSON for tools)
+/// to the documents folder. Returns the saved path.
+#[tauri::command]
+async fn save_document(app: tauri::AppHandle, name: String, contents: String) -> CmdResult<String> {
+    let clean: String = name
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.') {
+                c
+            } else {
+                '-'
+            }
+        })
+        .collect();
+    let ext_ok = clean.ends_with(".html") || clean.ends_with(".json");
+    if clean.starts_with('.') || !ext_ok {
+        return Err(CmdError::new(
+            "storage",
+            "Only .html and .json reports can be saved.",
+        ));
+    }
+    let path = documents_folder(&app)?.join(clean);
+    std::fs::write(&path, contents)
+        .map_err(|e| CmdError::new("storage", format!("Could not save the report: {e}")))?;
+    Ok(path.display().to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1943,6 +2096,9 @@ pub fn run() {
             get_replay,
             delete_replay,
             sim_stumble,
+            inspection_start,
+            inspection_finish,
+            save_document,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ApexDiag");

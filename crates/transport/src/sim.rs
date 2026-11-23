@@ -874,6 +874,19 @@ impl ElmSimulator {
                 1843.0
             }),
             0x2F => byte(61.0 * 255.0 / 100.0),
+            // Warm-ups since codes were cleared: few on the Camry.
+            0x30 => byte(if self.monitors.1 == 0x25 { 3.0 } else { 112.0 }),
+            // Odometer: only newer cars report it over OBD-II.
+            0xA6 => {
+                let km: f64 = match self.car.id {
+                    "mercedes_gle" => 61_240.3,
+                    "toyota_camry" => 48_877.0,
+                    "honda_accord" => 72_105.6,
+                    "jeep_wrangler" => 39_512.8,
+                    _ => return None,
+                };
+                ((km * 10.0) as u32).to_be_bytes().to_vec()
+            }
             0x33 => byte(101.0),
             0x3C => word((if run { 520.0 * warm + 20.0 } else { 20.0 } + 40.0) * 10.0),
             0x42 => word((self.volts() + (t * 0.7).sin() * 0.05) * 1000.0),

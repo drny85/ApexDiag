@@ -11,6 +11,7 @@ pub mod diag;
 pub mod doip;
 pub mod elm327;
 pub mod hsfz;
+pub mod inspection;
 pub mod isotp;
 pub mod obd2;
 pub mod packs;

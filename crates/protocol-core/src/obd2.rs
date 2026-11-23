@@ -69,6 +69,8 @@ pub enum Formula {
     WordPercent,
     /// (256A + B) / 32768 (lambda)
     Lambda,
+    /// (A·2²⁴ + B·2¹⁶ + C·2⁸ + D) / 10 (odometer, km)
+    Odometer,
 }
 
 impl Formula {
@@ -81,6 +83,7 @@ impl Formula {
             | Self::Timing
             | Self::TimesThree
             | Self::O2Volts => 1,
+            Self::Odometer => 4,
             _ => 2,
         }
     }
@@ -103,6 +106,10 @@ impl Formula {
             Self::CatTemp => word()? / 10.0 - 40.0,
             Self::WordPercent => word()? * 100.0 / 255.0,
             Self::Lambda => word()? / 32768.0,
+            Self::Odometer => {
+                let b = d.get(..4)?;
+                u32::from_be_bytes([b[0], b[1], b[2], b[3]]) as f64 / 10.0
+            }
         })
     }
 }
@@ -157,6 +164,7 @@ pub const PIDS: &[PidInfo] = &[
     pid!(0x1F, "Run time since start", "s", 0.0, 65535.0, Word, "Seconds since the engine was started."),
     pid!(0x21, "Distance with MIL on", "km", 0.0, 65535.0, Word, "Distance driven with the check-engine light on."),
     pid!(0x2F, "Fuel level", "%", 0.0, 100.0, Percent, "Fuel tank level."),
+    pid!(0x30, "Warm-ups since codes cleared", "", 0.0, 255.0, A, "Engine warm-ups since fault codes were last cleared. A low count means the codes were cleared recently."),
     pid!(0x31, "Distance since codes cleared", "km", 0.0, 65535.0, Word, "Distance since fault codes were last cleared. A low number when buying a used car is a warning sign."),
     pid!(0x33, "Barometric pressure", "kPa", 0.0, 255.0, A, "Outside air pressure."),
     pid!(0x3C, "Catalyst temperature B1S1", "°C", -40.0, 1000.0, CatTemp, "Estimated catalytic converter temperature, bank 1."),
@@ -166,6 +174,7 @@ pub const PIDS: &[PidInfo] = &[
     pid!(0x45, "Relative throttle", "%", 0.0, 100.0, Percent, "Throttle position relative to its learned closed position."),
     pid!(0x46, "Ambient air temperature", "°C", -40.0, 60.0, AMinus40, "Outside temperature."),
     pid!(0x5C, "Oil temperature", "°C", -40.0, 210.0, AMinus40, "Engine oil temperature."),
+    pid!(0xA6, "Odometer", "km", 0.0, 429_496_729.5, Odometer, "Total distance as the engine module reports it. Only newer cars (about 2019 on) report it over OBD-II."),
 ];
 
 /// Looks up a PID definition.

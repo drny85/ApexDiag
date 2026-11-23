@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Activity, AlertTriangle, BatteryMedium, Cable, CheckCircle2, CircleDot, ClipboardCheck, Cpu, Gauge, History, ListChecks, Loader2, Power, Radar, Rewind, Sparkles, Wrench, type LucideIcon } from "lucide-react";
+import { Activity, AlertTriangle, BatteryMedium, Cable, CheckCircle2, CircleDot, ClipboardCheck, ClipboardList, Cpu, Gauge, History, ListChecks, Loader2, Power, Radar, Rewind, Sparkles, Wrench, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDiag } from "@/lib/store";
 import { fmt } from "@/lib/format";
@@ -14,13 +14,15 @@ import QuickTest from "@/pages/QuickTest";
 import Copilot from "@/pages/Copilot";
 import CarTest from "@/pages/CarTest";
 import Replay from "@/pages/Replay";
+import Inspection from "@/pages/Inspection";
 
-export type PageId = "connect" | "cartest" | "quicktest" | "copilot" | "dashboard" | "replay" | "codes" | "modules" | "functions" | "timemachine" | "activity";
+export type PageId = "connect" | "cartest" | "quicktest" | "inspection" | "copilot" | "dashboard" | "replay" | "codes" | "modules" | "functions" | "timemachine" | "activity";
 
 const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "connect", label: "Connect", icon: Cable },
   { id: "cartest", label: "Car Test", icon: ClipboardCheck },
   { id: "quicktest", label: "Quick Test", icon: Radar },
+  { id: "inspection", label: "Inspection Report", icon: ClipboardList },
   { id: "dashboard", label: "Live Data", icon: Activity },
   { id: "replay", label: "Instant Replay", icon: Rewind },
   { id: "codes", label: "Fault Codes", icon: AlertTriangle },
@@ -34,6 +36,7 @@ const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
 /** Labels for the narrow icon rail. */
 const SHORT: Partial<Record<PageId, string>> = {
   quicktest: "Quick",
+  inspection: "Inspect",
   dashboard: "Live",
   replay: "Replay",
   codes: "Codes",
@@ -87,6 +90,7 @@ export default function App() {
             {page === "connect" && <Connect go={setPage} />}
             {page === "cartest" && <CarTest go={setPage} />}
             {page === "quicktest" && <QuickTest go={setPage} />}
+            {page === "inspection" && <Inspection go={setPage} />}
             {page === "copilot" && <Copilot go={setPage} />}
             {page === "dashboard" && <Dashboard go={setPage} />}
             {page === "replay" && <Replay go={setPage} />}
