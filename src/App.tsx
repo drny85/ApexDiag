@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, AlertTriangle, BatteryMedium, Cable, Cpu, Gauge, History, ListChecks, Power, Radar, Sparkles, Wrench, type LucideIcon } from "lucide-react";
+import { Activity, AlertTriangle, BatteryMedium, Cable, ClipboardCheck, Cpu, Gauge, History, ListChecks, Power, Radar, Sparkles, Wrench, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDiag } from "@/lib/store";
 import { fmt } from "@/lib/format";
@@ -12,11 +12,13 @@ import ActivityPage from "@/pages/Activity";
 import TimeMachine from "@/pages/TimeMachine";
 import QuickTest from "@/pages/QuickTest";
 import Copilot from "@/pages/Copilot";
+import CarTest from "@/pages/CarTest";
 
-export type PageId = "connect" | "quicktest" | "copilot" | "dashboard" | "codes" | "modules" | "functions" | "timemachine" | "activity";
+export type PageId = "connect" | "cartest" | "quicktest" | "copilot" | "dashboard" | "codes" | "modules" | "functions" | "timemachine" | "activity";
 
 const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "connect", label: "Connect", icon: Cable },
+  { id: "cartest", label: "Car Test", icon: ClipboardCheck },
   { id: "quicktest", label: "Quick Test", icon: Radar },
   { id: "dashboard", label: "Live Data", icon: Activity },
   { id: "codes", label: "Fault Codes", icon: AlertTriangle },
@@ -80,6 +82,7 @@ export default function App() {
         <main className="safe-bottom flex-1 overflow-auto overscroll-contain px-4 pb-10 pt-6 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-[1400px]" key={page + (connection ? "c" : "")}>
             {page === "connect" && <Connect go={setPage} />}
+            {page === "cartest" && <CarTest go={setPage} />}
             {page === "quicktest" && <QuickTest go={setPage} />}
             {page === "copilot" && <Copilot go={setPage} />}
             {page === "dashboard" && <Dashboard go={setPage} />}

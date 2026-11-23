@@ -64,6 +64,9 @@ targets:
         CFBundleDisplayName: ApexDiag
         NSBluetoothAlwaysUsageDescription: ApexDiag connects to your Bluetooth OBD-II adapter (for example a Veepeak OBDCheck BLE) to read and diagnose your car.
         ITSAppUsesNonExemptEncryption: false
+        # Car test reports and captures show up in Files > On My iPad > ApexDiag.
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
         UIRequiresFullScreen: false
     entitlements:
       path: apexdiag_iOS/apexdiag_iOS.entitlements

@@ -5,6 +5,7 @@
 //! any safety requirement is not proven. Every attempt, allowed or blocked,
 //! is written to the activity log.
 
+mod car_test;
 mod repairs;
 mod timemachine;
 
@@ -22,6 +23,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{Manager, State};
 use timemachine::SnapshotStore;
 use tokio::sync::Mutex;
+use transport::capture::Capture;
 use transport::elm::{AdapterInfo, ClientError, ElmClient, FreezeFrame};
 use transport::sim::{self, ElmSimulator, SimCar, SimEngine};
 use transport::{DiscoveredDevice, HardwareTransport, TransportKind};
@@ -37,6 +39,8 @@ struct Inner {
     pack: Option<&'static Pack>,
     charger_confirmed: bool,
     log: Vec<LogEntry>,
+    /// The raw capture file for this connection.
+    capture: Option<std::path::PathBuf>,
 }
 
 #[derive(Default)]
@@ -62,16 +66,45 @@ impl CmdError {
     }
 }
 
+/// What went wrong talking to the adapter, in words a technician can act on.
+fn explain_client_error(e: &ClientError) -> String {
+    use protocol_core::ProtocolError;
+    use transport::TransportError;
+    match e {
+        ClientError::Protocol(ProtocolError::NegativeResponse { nrc, .. }) => {
+            protocol_core::diag::Nrc(*nrc).explain().to_string()
+        }
+        ClientError::Transport(TransportError::Timeout(_)) => {
+            "The adapter stopped answering. Check it is still plugged in, its light is on and the ignition is on, then try again.".into()
+        }
+        ClientError::Transport(TransportError::NotConnected) => {
+            "The adapter is not connected. Connect it again from the Connect page.".into()
+        }
+        ClientError::Transport(other) => format!("The link to the adapter failed: {other}"),
+        ClientError::NoReply(name) => format!(
+            "{name} did not answer. It may not be fitted to this car, or the ignition is off."
+        ),
+        ClientError::Unsupported(cmd) => format!(
+            "This adapter does not support {cmd}. Many low-cost ELM327 copies leave commands out; engine OBD-II still works."
+        ),
+        other => other.to_string(),
+    }
+}
+
 impl From<ClientError> for CmdError {
     fn from(e: ClientError) -> Self {
-        use protocol_core::ProtocolError;
-        let message = match &e {
-            ClientError::Protocol(ProtocolError::NegativeResponse { nrc, .. }) => {
-                protocol_core::diag::Nrc(*nrc).explain().to_string()
-            }
-            other => other.to_string(),
-        };
-        Self::new("device", message)
+        Self::new("device", explain_client_error(&e))
+    }
+}
+
+/// How a module is reached, for reports.
+fn link_label(m: &Module) -> String {
+    match m.link {
+        vehicle::Link::BmwExtended => format!(
+            "BMW D-CAN extended addressing (6F1 to address {:02X})",
+            m.address
+        ),
+        vehicle::Link::Can11 { tx, rx } => format!("CAN {tx:03X} / {rx:03X}"),
     }
 }
 
@@ -552,6 +585,7 @@ struct ConnectReport {
 async fn connect(
     state: State<'_, AppState>,
     store: State<'_, SnapshotStore>,
+    captures: State<'_, Captures>,
     id: String,
 ) -> CmdResult<ConnectReport> {
     let device = list_devices()
@@ -585,6 +619,15 @@ async fn connect(
                 "This adapter is not supported yet.",
             ))
         }
+    };
+    // Record every exchange, so real-car data can be checked afterwards.
+    let (link, capture_path) = match captures.open(&device.name) {
+        Some((file, path)) => (
+            Box::new(Capture::new(link, file, &device.name, now_ms()))
+                as Box<dyn HardwareTransport + Send>,
+            Some(path),
+        ),
+        None => (link, None),
     };
     let mut inner = state.0.lock().await;
     let mut client = ElmClient::new(link);
@@ -629,6 +672,7 @@ async fn connect(
     inner.pack = Some(pack);
     inner.device = Some(device.clone());
     inner.charger_confirmed = false;
+    inner.capture = capture_path;
     let target = vin.clone().unwrap_or_else(|| "vehicle".into());
     inner.record(
         "Connect",
@@ -1498,6 +1542,160 @@ async fn activity_log(state: State<'_, AppState>) -> CmdResult<Vec<serde_json::V
         .collect())
 }
 
+// ---- raw capture and the first real car test --------------------------
+
+/// Where raw captures are kept: the newest few, one file per connection.
+struct Captures {
+    dir: std::path::PathBuf,
+}
+
+impl Captures {
+    const KEEP: usize = 30;
+
+    fn open(&self, adapter: &str) -> Option<(std::fs::File, std::path::PathBuf)> {
+        std::fs::create_dir_all(&self.dir).ok()?;
+        self.prune();
+        let slug: String = adapter
+            .chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+            .collect();
+        let path = self.dir.join(format!("capture-{}-{slug}.log", now_ms()));
+        let file = std::fs::File::create(&path).ok()?;
+        Some((file, path))
+    }
+
+    fn prune(&self) {
+        let Ok(rd) = std::fs::read_dir(&self.dir) else {
+            return;
+        };
+        let mut files: Vec<_> = rd
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.extension().is_some_and(|x| x == "log"))
+            .collect();
+        files.sort();
+        let excess = files.len().saturating_sub(Self::KEEP - 1);
+        for p in files.into_iter().take(excess) {
+            let _ = std::fs::remove_file(p);
+        }
+    }
+}
+
+#[tauri::command]
+fn car_test_plan() -> &'static [car_test::StepInfo] {
+    car_test::STEPS
+}
+
+#[tauri::command]
+async fn car_test_step(
+    state: State<'_, AppState>,
+    step: String,
+) -> CmdResult<car_test::StepResult> {
+    let mut inner = state.0.lock().await;
+    let r = car_test::run(&mut inner, &step).await?;
+    if step == "modules" {
+        let target = inner.vin.clone().unwrap_or_else(|| "vehicle".into());
+        inner.record(
+            "Car test",
+            &target,
+            RiskTier::Read,
+            true,
+            "First real car test finished (read only)",
+        );
+    }
+    Ok(r)
+}
+
+#[derive(Serialize)]
+struct CaptureView {
+    path: Option<String>,
+    bytes: u64,
+    /// The end of the capture, for a quick look in the app.
+    tail: Vec<String>,
+}
+
+#[tauri::command]
+async fn capture_info(state: State<'_, AppState>) -> CmdResult<CaptureView> {
+    let inner = state.0.lock().await;
+    let Some(path) = inner.capture.clone() else {
+        return Ok(CaptureView {
+            path: None,
+            bytes: 0,
+            tail: vec![],
+        });
+    };
+    let text = std::fs::read_to_string(&path).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    let tail = lines[lines.len().saturating_sub(40)..]
+        .iter()
+        .map(|l| l.to_string())
+        .collect();
+    Ok(CaptureView {
+        path: Some(path.display().to_string()),
+        bytes: text.len() as u64,
+        tail,
+    })
+}
+
+#[derive(Serialize)]
+struct SavedTest {
+    folder: String,
+    report: String,
+    capture: Option<String>,
+}
+
+/// Saves the test report and a copy of the raw capture where the person can
+/// reach them: Documents/ApexDiag on a Mac, the app's folder in Files on an
+/// iPad.
+#[tauri::command]
+async fn save_car_test(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    report: serde_json::Value,
+) -> CmdResult<SavedTest> {
+    let inner = state.0.lock().await;
+    // Documents where the platform has one (the app's own folder on iPad),
+    // else ~/Documents, else the app's data folder.
+    let base = app
+        .path()
+        .document_dir()
+        .or_else(|_| app.path().home_dir().map(|h| h.join("Documents")))
+        .or_else(|_| app.path().app_data_dir())
+        .map_err(|e| CmdError::new("storage", format!("No folder to save to: {e}")))?;
+    let folder = if cfg!(mobile) {
+        base
+    } else {
+        base.join("ApexDiag")
+    };
+    std::fs::create_dir_all(&folder).map_err(|e| {
+        CmdError::new(
+            "storage",
+            format!("Could not create {}: {e}", folder.display()),
+        )
+    })?;
+    let stamp = now_ms();
+    let name = inner.vin.clone().unwrap_or_else(|| "car".into());
+    let report_path = folder.join(format!("car-test-{name}-{stamp}.json"));
+    let body = serde_json::to_string_pretty(&report).unwrap_or_default();
+    std::fs::write(&report_path, body)
+        .map_err(|e| CmdError::new("storage", format!("Could not save the report: {e}")))?;
+    let capture = match &inner.capture {
+        Some(src) => {
+            let dst = folder.join(format!("car-test-{name}-{stamp}.log"));
+            std::fs::copy(src, &dst).map_err(|e| {
+                CmdError::new("storage", format!("Could not copy the capture: {e}"))
+            })?;
+            Some(dst.display().to_string())
+        }
+        None => None,
+    };
+    Ok(SavedTest {
+        folder: folder.display().to_string(),
+        report: report_path.display().to_string(),
+        capture,
+    })
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1509,6 +1707,9 @@ pub fn run() {
                 .unwrap_or_else(|_| std::env::temp_dir().join("ApexDiag"))
                 .join("snapshots");
             app.manage(RepairStore::new(dir.with_file_name("repairs")));
+            app.manage(Captures {
+                dir: dir.with_file_name("captures"),
+            });
             app.manage(SnapshotStore::new(dir));
             Ok(())
         })
@@ -1541,6 +1742,10 @@ pub fn run() {
             sim_apply_repair,
             save_repair,
             list_repairs,
+            car_test_plan,
+            car_test_step,
+            capture_info,
+            save_car_test,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ApexDiag");

@@ -49,8 +49,8 @@ const KNOWN_PAIRS: &[(Uuid, Uuid)] = &[
 
 /// Names that identify an OBD adapter during a scan.
 const OBD_NAME_HINTS: &[&str] = &[
-    "OBD", "VEEPEAK", "VLINK", "V-LINK", "ELM", "KONNWEI", "OBDII", "OBDLINK", "LELINK",
-    "CARISTA", "VGATE", "ICAR",
+    "OBD", "VEEPEAK", "VLINK", "V-LINK", "ELM", "KONNWEI", "OBDII", "OBDLINK", "LELINK", "CARISTA",
+    "VGATE", "ICAR",
 ];
 
 struct Registry {
@@ -219,7 +219,9 @@ impl HardwareTransport for BleTransport {
             let slot = registry().lock().await;
             slot.as_ref()
                 .and_then(|r| r.found.get(&self.peripheral_id).cloned())
-                .ok_or_else(|| other("Adapter not found. Scan again with the adapter plugged in."))?
+                .ok_or_else(|| {
+                    other("Adapter not found. Scan again with the adapter plugged in.")
+                })?
         };
         let attempt = async {
             if !p.is_connected().await.unwrap_or(false) {

@@ -24,6 +24,10 @@
 	<false/>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>UIFileSharingEnabled</key>
+	<true/>
+	<key>LSSupportsOpeningDocumentsInPlace</key>
+	<true/>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>ApexDiag connects to your Bluetooth OBD-II adapter (for example a Veepeak OBDCheck BLE) to read and diagnose your car.</string>
 	<key>UILaunchStoryboardName</key>
