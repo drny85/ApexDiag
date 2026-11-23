@@ -19,6 +19,7 @@ import {
   RotateCw,
   ShieldAlert,
   ShieldCheck,
+  Sparkles,
 } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import Empty from "@/components/Empty";
@@ -45,6 +46,12 @@ interface Run {
 
 /** Kept across page switches, per car. */
 let lastRun: Run | null = null;
+
+/** Module faults from the last Quick Test on this car, for the Repair Copilot. */
+export function quickTestFaults(vin: string | null): { module: ModuleInfo; fault: ModuleFault }[] {
+  if (!lastRun || lastRun.vin !== vin) return [];
+  return Object.values(lastRun.results).flatMap((s) => s.codes.map((fault) => ({ module: s.module, fault })));
+}
 
 export default function QuickTest({ go }: { go: (p: PageId) => void }) {
   const { connection } = useDiag();
@@ -310,6 +317,7 @@ function isActive(f: ModuleFault) {
 }
 
 function Report({ run, pack, go }: { run: Run; pack: Pack; go: (p: PageId) => void }) {
+  const { setFocus } = useDiag();
   const list = Object.values(run.results);
   const answered = list.filter((s) => s.present);
   const withFaults = answered.filter((s) => s.codes.length);
@@ -395,6 +403,17 @@ function Report({ run, pack, go }: { run: Run; pack: Pack; go: (p: PageId) => vo
                       </div>
                       <p className="mt-0.5 text-sm text-foreground/80">{fault.description ?? `${pack.brand} fault text not in the database yet.`}</p>
                     </div>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="shrink-0 self-center text-cyan-200"
+                      onClick={() => {
+                        setFocus({ code: fault.code, module: module.name });
+                        go("copilot");
+                      }}
+                    >
+                      <Sparkles /> Fix
+                    </Button>
                   </li>
                 ))}
             </ul>

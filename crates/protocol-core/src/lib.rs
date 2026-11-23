@@ -6,6 +6,7 @@
 
 pub mod bmw_e70;
 pub mod catalog;
+pub mod copilot;
 pub mod diag;
 pub mod elm327;
 pub mod isotp;
