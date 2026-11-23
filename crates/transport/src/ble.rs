@@ -100,7 +100,7 @@ pub async fn scan(window: Duration, all: bool) -> Result<Vec<DiscoveredDevice>> 
     // and the first launch on iOS waits for the permission prompt. Retry the
     // scan start for a few seconds before giving up.
     let mut started = false;
-    for _ in 0..20 {
+    for _ in 0..60 {
         if reg.adapter.start_scan(ScanFilter::default()).await.is_ok() {
             started = true;
             break;
