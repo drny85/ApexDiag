@@ -262,9 +262,11 @@ pub fn decode_dtcs(service: Service, payload: &[u8]) -> Result<Vec<Dtc>, Protoco
         .split_first()
         .ok_or(ProtocolError::MalformedFrame("DTC reply missing count"))?;
     Ok(pairs
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .take(count as usize)
-        .filter(|p| p != &[0, 0])
+        .filter(|p| **p != [0, 0])
         .map(|p| {
             let code = decode_dtc(p[0], p[1]);
             let description = describe_dtc(&code);

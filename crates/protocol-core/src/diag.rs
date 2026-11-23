@@ -251,7 +251,9 @@ pub fn parse_module_dtcs(protocol: Protocol, data: &[u8]) -> Result<Vec<ModuleDt
                 return Err(ProtocolError::MalformedFrame("fewer DTCs than announced"));
             }
             Ok(rest
-                .chunks_exact(3)
+                .as_chunks::<3>()
+                .0
+                .iter()
                 .take(count as usize)
                 .map(|c| ModuleDtc {
                     code: format!("{:02X}{:02X}", c[0], c[1]),
@@ -266,7 +268,9 @@ pub fn parse_module_dtcs(protocol: Protocol, data: &[u8]) -> Result<Vec<ModuleDt
                 .get(2..)
                 .ok_or(ProtocolError::MalformedFrame("missing DTC header"))?;
             Ok(rest
-                .chunks_exact(4)
+                .as_chunks::<4>()
+                .0
+                .iter()
                 .map(|c| ModuleDtc {
                     code: format!("{:02X}{:02X}{:02X}", c[0], c[1], c[2]),
                     status: c[3],
