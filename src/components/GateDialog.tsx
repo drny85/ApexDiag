@@ -1,5 +1,21 @@
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Circle, Loader2, ShieldAlert, Undo2, XCircle } from "lucide-react";
+import {
+  AlertTriangle,
+  BatteryMedium,
+  Cable,
+  CheckCircle2,
+  Circle,
+  OctagonPause,
+  History,
+  Loader2,
+  PlugZap,
+  Power,
+  ShieldAlert,
+  ShieldCheck,
+  Undo2,
+  type LucideIcon,
+} from "lucide-react";
+import FunctionPreview from "@/components/illustrations/FunctionPreview";
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -127,6 +143,7 @@ export default function GateDialog({
         <div className="flex-1 space-y-5 overflow-auto px-6 py-5">
           {phase === "review" || phase === "failed" ? (
             <>
+              <FunctionPreview id={fn.id} />
               <Section title="Why you'd use it">{fn.why}</Section>
               <Section title="What can go wrong" icon={<AlertTriangle className="size-3.5 text-amber-300" />} tone="warn">
                 {fn.risks}
@@ -150,11 +167,7 @@ export default function GateDialog({
                             ok ? "bg-emerald-400/[0.06] ring-emerald-400/15" : "bg-rose-400/[0.06] ring-rose-400/20",
                           )}
                         >
-                          {ok ? (
-                            <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-emerald-400" />
-                          ) : (
-                            <XCircle className="mt-0.5 size-4 shrink-0 text-rose-400" />
-                          )}
+                          <RequirementIcon kind={r.kind} ok={ok} />
                           <span className={cn("flex-1", ok ? "text-foreground/90" : "text-rose-100")}>{r.text}</span>
                           {!ok && connection?.simulated && (r.kind === "engine_off" || r.kind === "engine_running") && (
                             <button
@@ -223,7 +236,8 @@ export default function GateDialog({
               )}
             </>
           ) : (
-            <div className="py-2">
+            <div className="space-y-5 py-2">
+              <FunctionPreview id={fn.id} />
               <ol className="relative space-y-4 border-l border-white/10 pl-6">
                 {steps.length === 0 && (
                   <li className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -273,6 +287,40 @@ export default function GateDialog({
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+const REQUIREMENT_ICON: Record<string, LucideIcon> = {
+  stationary: OctagonPause,
+  engine_off: Power,
+  engine_running: Power,
+  battery_at_least: BatteryMedium,
+  charger_connected: PlugZap,
+  wired_adapter: Cable,
+  backup_taken: History,
+  job_verified: ShieldCheck,
+};
+
+/** A picture of the condition, which pops into place when it is met. */
+function RequirementIcon({ kind, ok }: { kind: string; ok: boolean }) {
+  const Icon = REQUIREMENT_ICON[kind] ?? CheckCircle2;
+  return (
+    <span
+      key={ok ? "ok" : "no"}
+      className={cn(
+        "ill-motion relative -my-0.5 grid size-[26px] shrink-0 place-items-center rounded-full ring-1",
+        ok ? "bg-emerald-400/15 text-emerald-300 ring-emerald-400/40" : "bg-rose-400/10 text-rose-300 ring-rose-400/30",
+      )}
+      style={{ animation: ok ? "ill-pop 450ms cubic-bezier(.3,1.4,.5,1) both" : undefined }}
+    >
+      <Icon className="size-3.5" />
+      <span
+        className={cn(
+          "absolute -bottom-0.5 -right-0.5 size-2 rounded-full ring-2 ring-[oklch(0.17_0.008_265)]",
+          ok ? "bg-emerald-400" : "bg-rose-400",
+        )}
+      />
+    </span>
   );
 }
 

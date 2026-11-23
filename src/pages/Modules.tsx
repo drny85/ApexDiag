@@ -10,6 +10,7 @@ import { useDiag } from "@/lib/store";
 import { api, asCmdError, type ModuleDetail, type ModuleInfo, type ModuleScan } from "@/lib/tauri";
 import { SYSTEM_LABEL, hex } from "@/lib/format";
 import { cn } from "@/lib/utils";
+import CarMap from "@/components/illustrations/CarMap";
 import type { PageId } from "@/App";
 
 export default function Modules({ go }: { go: (p: PageId) => void }) {
@@ -72,6 +73,7 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
       )}
       {error && <p className="mb-4 text-sm text-rose-300">{error}</p>}
 
+      <div className="grid gap-6 xl:grid-cols-[minmax(0,1fr)_300px]">
       <div className="space-y-6">
         {bySystem.map(({ system, list }) => (
           <section key={system}>
@@ -119,9 +121,29 @@ export default function Modules({ go }: { go: (p: PageId) => void }) {
           </section>
         ))}
       </div>
+      <aside className="order-first self-start rounded-2xl border border-white/[0.07] bg-white/[0.02] p-4 xl:sticky xl:top-0 xl:order-none">
+        <h3 className="mb-1 text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Where they live</h3>
+        <div className="mb-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground">
+          <Legend color="bg-emerald-400" label="OK" />
+          <Legend color="bg-amber-400" label="Faults stored" />
+          <Legend color="bg-slate-400" label="Not scanned" />
+          <Legend color="bg-slate-600" label="No reply" />
+        </div>
+        <CarMap modules={modules} scan={scan} scanning={scanning} onPick={setOpen} />
+      </aside>
+      </div>
 
       <ModuleSheet module={open} onClose={() => setOpen(null)} onChanged={runScan} />
     </div>
+  );
+}
+
+function Legend({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className={cn("size-2 rounded-full", color)} />
+      {label}
+    </span>
   );
 }
 

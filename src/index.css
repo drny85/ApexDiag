@@ -89,3 +89,65 @@
     font-family: "SF Mono", ui-monospace, Menlo, monospace;
   }
 }
+
+/* ---- instructional illustrations -------------------------------------
+   Line art drawn in SVG. Motion only where it explains something, and
+   none at all when macOS "Reduce motion" is on. */
+.ill * {
+  transform-box: fill-box;
+  transform-origin: center;
+}
+.ill .o-bottom { transform-origin: center bottom; }
+.ill .o-left { transform-origin: left center; }
+@keyframes ill-plug {
+  0%, 12% { transform: translateY(34px); opacity: 0; }
+  22% { opacity: 1; }
+  42%, 88% { transform: translateY(0); opacity: 1; }
+  100% { transform: translateY(0); opacity: 0; }
+}
+@keyframes ill-led {
+  0%, 44% { opacity: 0.12; }
+  50%, 88% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes ill-flow { to { stroke-dashoffset: -20; } }
+@keyframes ill-spin { to { transform: rotate(360deg); } }
+@keyframes ill-rewind { to { transform: rotate(-360deg); } }
+@keyframes ill-rise {
+  0% { transform: translateY(0); opacity: 0; }
+  20% { opacity: 1; }
+  100% { transform: translateY(-46px); opacity: 0; }
+}
+@keyframes ill-breathe { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@keyframes ill-ping {
+  0% { transform: scale(1); opacity: 0.8; }
+  100% { transform: scale(2.8); opacity: 0; }
+}
+@keyframes ill-grow { 0% { transform: scaleX(0); } 75%, 100% { transform: scaleX(1); } }
+@keyframes ill-pop {
+  0% { transform: scale(0.5); opacity: 0; }
+  60% { transform: scale(1.18); opacity: 1; }
+  100% { transform: scale(1); opacity: 1; }
+}
+@keyframes ill-sweep {
+  0%, 15% { transform: translateX(0); }
+  65%, 100% { transform: translateX(var(--sweep, 180px)); }
+}
+@keyframes ill-fade-out { 0%, 25% { opacity: 1; } 60%, 100% { opacity: 0.08; } }
+@keyframes ill-needle {
+  0%, 20% { transform: rotate(var(--from, 50deg)); }
+  55%, 100% { transform: rotate(var(--to, -50deg)); }
+}
+@keyframes ill-slot {
+  0%, 40% { opacity: 0.15; }
+  55%, 100% { opacity: 1; }
+}
+@keyframes ill-key {
+  0%, 10% { transform: translate(-30px, 0); opacity: 0; }
+  30%, 70% { transform: translate(0, 0); opacity: 1; }
+  100% { transform: translate(0, 0); opacity: 0; }
+}
+@keyframes ill-flip { 0%, 30% { transform: translateX(0); } 55%, 100% { transform: translateX(var(--flip, 14px)); } }
+@media (prefers-reduced-motion: reduce) {
+  .ill *, .ill-motion { animation: none !important; }
+}
