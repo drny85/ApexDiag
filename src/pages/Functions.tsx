@@ -14,7 +14,8 @@ export default function Functions() {
   const [open, setOpen] = useState<FunctionInfo | undefined>();
 
   const tiers = catalog?.tiers ?? [];
-  const functions = (catalog?.functions ?? []).filter((f) => f.tier !== "read");
+  // Restoring coding lives in the Time Machine, next to the snapshot it restores.
+  const functions = (catalog?.functions ?? []).filter((f) => f.tier !== "read" && f.id !== "snapshot_restore");
 
   return (
     <div>

@@ -843,6 +843,12 @@ async fn run_function(
     store: State<'_, SnapshotStore>,
     id: String,
 ) -> CmdResult<FunctionRun> {
+    if id == "snapshot_restore" {
+        return Err(CmdError::new(
+            "unavailable",
+            "Restore coding from the Time Machine, where you pick the snapshot.",
+        ));
+    }
     let mut inner = state.0.lock().await;
     let simulated = inner.simulated();
     let targets = function_targets(&id);
