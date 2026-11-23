@@ -1894,6 +1894,17 @@ fn delete_replay(store: State<'_, ReplayStore>, id: String) -> CmdResult<()> {
         .map_err(|e| CmdError::new("storage", format!("Could not delete the replay: {e}")))
 }
 
+/// Demo only: drives the practice car round a loop, or parks it.
+#[tauri::command]
+async fn sim_drive(state: State<'_, AppState>, on: bool) -> CmdResult<()> {
+    let mut inner = state.0.lock().await;
+    let sim = inner.client()?.link_mut().simulator().ok_or_else(|| {
+        CmdError::new("unavailable", "Only the demo car can go for a demo drive.")
+    })?;
+    sim.set_drive(on);
+    Ok(())
+}
+
 /// Demo only: makes the practice car's engine stumble once.
 #[tauri::command]
 async fn sim_stumble(state: State<'_, AppState>) -> CmdResult<()> {
@@ -2257,6 +2268,7 @@ pub fn run() {
             get_replay,
             delete_replay,
             sim_stumble,
+            sim_drive,
             inspection_start,
             inspection_finish,
             full_scan_start,

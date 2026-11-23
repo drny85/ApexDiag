@@ -185,11 +185,39 @@ pub struct ElmSimulator {
     low_charge: bool,
     /// Demo only: when a one-off stumble started (seconds since start).
     stumble_at: Option<f64>,
+    /// Demo only: when the demo drive started (seconds since start).
+    drive_at: Option<f64>,
     /// Answers several PIDs per request (most CAN cars do). Tests turn it
     /// off to act like a car that only takes one at a time.
     pub multi_pid: bool,
     /// Requests seen, for tests.
     pub log: Vec<String>,
+}
+
+/// Length of the demo drive loop.
+pub const DRIVE_LOOP_S: f64 = 64.0;
+
+/// The demo drive: speed (km/h) and throttle (%) `s` seconds into the loop.
+pub fn drive_profile(s: f64) -> (f64, f64) {
+    // Eased step from a to b over [t0, t1].
+    let ease = |t0: f64, t1: f64, a: f64, b: f64| {
+        let x = ((s - t0) / (t1 - t0)).clamp(0.0, 1.0);
+        a + (b - a) * x * x * (3.0 - 2.0 * x)
+    };
+    match s {
+        s if s < 3.0 => (0.0, 0.0),
+        // Pull away hard: quick at first, easing off near 100.
+        s if s < 13.0 => {
+            let x = (s - 3.0) / 10.0;
+            (100.0 * (1.0 - (1.0 - x).powi(2)), 72.0 - 30.0 * x)
+        }
+        s if s < 30.0 => (100.0 + 3.0 * ((s - 13.0) * 0.4).sin(), 22.0),
+        s if s < 36.0 => (ease(30.0, 36.0, 100.0, 45.0), 0.0),
+        s if s < 46.0 => (45.0, 14.0),
+        s if s < 50.0 => (ease(46.0, 50.0, 45.0, 70.0), 52.0),
+        s if s < 58.0 => (ease(50.0, 58.0, 70.0, 0.0), 0.0),
+        _ => (0.0, 0.0),
+    }
 }
 
 impl Default for ElmSimulator {
@@ -224,6 +252,7 @@ impl ElmSimulator {
             cat_worn: false,
             low_charge: false,
             stumble_at: None,
+            drive_at: None,
             multi_pid: true,
             trims: Trims {
                 module: 0,
@@ -529,6 +558,39 @@ impl ElmSimulator {
         self.stumble_at = Some(self.t());
     }
 
+    /// Demo only: drives the practice car round a loop (pull away, cruise,
+    /// brake, corner, stop) so Drive Mode can be tried at a desk.
+    pub fn set_drive(&mut self, on: bool) {
+        self.drive_at = on.then(|| self.t());
+        if on {
+            self.engine = SimEngine::Idling;
+        }
+    }
+
+    pub fn driving(&self) -> bool {
+        self.drive_at.is_some() && self.running()
+    }
+
+    /// Speed (km/h), throttle (%), rpm and seconds driven, while the demo
+    /// drive runs.
+    fn drive_state(&self) -> Option<(f64, f64, f64, f64)> {
+        let at = self.drive_at.filter(|_| self.running())?;
+        let elapsed = self.t() - at;
+        let (v, throttle) = drive_profile(elapsed % DRIVE_LOOP_S);
+        const RATIO: [f64; 7] = [0.0, 105.0, 62.0, 42.0, 31.0, 24.0, 18.0];
+        let gear = match v {
+            v if v < 18.0 => 1,
+            v if v < 35.0 => 2,
+            v if v < 55.0 => 3,
+            v if v < 75.0 => 4,
+            v if v < 95.0 => 5,
+            _ => 6,
+        };
+        let idle = 720.0 + 20.0 * (self.t() * 1.7).sin();
+        let rpm = (v * RATIO[gear] + throttle * 8.0).max(idle);
+        Some((v, throttle, rpm, elapsed))
+    }
+
     /// How deep into the stumble the engine is right now, 0.0 to 1.0.
     fn stumble_depth(&self) -> f64 {
         const LENGTH: f64 = 1.2;
@@ -791,10 +853,11 @@ impl ElmSimulator {
         let warm = (t / 120.0).min(1.0);
         let coolant = 40.0 + 65.0 * warm + (t * 0.3).sin();
         let dip = self.stumble_depth();
-        let rpm = if run {
-            700.0 + 25.0 * (t * 1.7).sin() + 10.0 * (t * 5.3).sin() - 190.0 * dip
-        } else {
-            0.0
+        let drive = self.drive_state();
+        let rpm = match drive {
+            Some((_, _, rpm, _)) => rpm,
+            None if run => 700.0 + 25.0 * (t * 1.7).sin() + 10.0 * (t * 5.3).sin() - 190.0 * dip,
+            None => 0.0,
         };
         let word = |v: f64| {
             let v = v.clamp(0.0, 65535.0) as u16;
@@ -813,6 +876,18 @@ impl ElmSimulator {
                     } * 1.28,
             )
         };
+        if let Some((speed, throttle, rpm, driven)) = drive {
+            let load = 15.0 + throttle * 0.9;
+            match pid {
+                0x04 => return Some(byte(load * 255.0 / 100.0)),
+                0x0B => return Some(byte(30.0 + throttle * 0.7)),
+                0x0D => return Some(byte(speed)),
+                0x10 => return Some(word((2.5 + rpm * load / 100.0 * 0.04) * 100.0)),
+                0x11 => return Some(byte((15.0 + throttle * 0.85) * 255.0 / 100.0)),
+                0x2F => return Some(byte((61.0 - driven * 0.08).max(6.0) * 255.0 / 100.0)),
+                _ => {}
+            }
+        }
         Some(match pid {
             // Single-bank engines do not support PIDs 08 and 09.
             0x00 if self.two_banks() => vec![0xBF, 0xBF, 0xB8, 0x13],
@@ -864,7 +939,7 @@ impl ElmSimulator {
                     0.0
                 } * 100.0,
             ),
-            0x11 => byte(if run { 82.0 } else { 0.0 } * 255.0 / 100.0),
+            0x11 => byte(if run { 15.0 } else { 0.0 } * 255.0 / 100.0),
             // A misfire sends unburnt oxygen past the sensor: it reads lean.
             0x14 if dip > 0.3 => vec![14, 0xFF],
             0x14 => vec![
@@ -1212,6 +1287,29 @@ mod tests {
                 .unwrap()
                 .starts_with("Demo:"));
         }
+    }
+
+    #[test]
+    fn demo_drive_moves_and_returns_to_a_stop() {
+        let mut top: f64 = 0.0;
+        let mut last = 0.0;
+        for i in 0..(DRIVE_LOOP_S as usize * 10) {
+            let (v, throttle) = drive_profile(i as f64 / 10.0);
+            assert!((0.0..=105.0).contains(&v) && (0.0..=100.0).contains(&throttle));
+            // Believable: never more than about 0.7 g.
+            assert!((v - last).abs() < 2.5, "jump at {i}: {last} -> {v}");
+            top = top.max(v);
+            last = v;
+        }
+        assert!(top > 99.0);
+        assert_eq!(drive_profile(DRIVE_LOOP_S - 0.1).0, 0.0);
+        let mut sim = ElmSimulator::default();
+        sim.set_drive(true);
+        sim.drive_at = Some(sim.t() - 20.0);
+        let (v, _, rpm, _) = sim.drive_state().unwrap();
+        assert!(v > 95.0 && (1500.0..2500.0).contains(&rpm), "{v} {rpm}");
+        sim.set_drive(false);
+        assert!(sim.drive_state().is_none());
     }
 
     #[test]

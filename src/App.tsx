@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { Activity, AlertTriangle, BatteryMedium, Cable, CheckCircle2, CircleDot, ClipboardCheck, ClipboardList, Cpu, Gauge, History, ListChecks, Loader2, Power, Radar, Rewind, Sparkles, Wrench, type LucideIcon } from "lucide-react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { Activity, AlertTriangle, CarFront, BatteryMedium, Cable, CheckCircle2, CircleDot, ClipboardCheck, ClipboardList, Cpu, Gauge, History, ListChecks, Loader2, Power, Radar, Rewind, Sparkles, Wrench, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDiag } from "@/lib/store";
 import { LANGS, useI18n, useT } from "@/lib/i18n";
@@ -16,8 +16,10 @@ import Copilot from "@/pages/Copilot";
 import CarTest from "@/pages/CarTest";
 import Replay from "@/pages/Replay";
 import Inspection from "@/pages/Inspection";
+// The 3D engine is large: load it only when Drive Mode opens.
+const Drive = lazy(() => import("@/pages/Drive"));
 
-export type PageId = "connect" | "cartest" | "quicktest" | "inspection" | "copilot" | "dashboard" | "replay" | "codes" | "modules" | "functions" | "timemachine" | "activity";
+export type PageId = "connect" | "cartest" | "quicktest" | "inspection" | "copilot" | "dashboard" | "drive" | "replay" | "codes" | "modules" | "functions" | "timemachine" | "activity";
 
 const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "connect", label: "Connect", icon: Cable },
@@ -25,6 +27,7 @@ const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "quicktest", label: "Full Scan", icon: Radar },
   { id: "inspection", label: "Inspection Report", icon: ClipboardList },
   { id: "dashboard", label: "Live Data", icon: Activity },
+  { id: "drive", label: "Drive Mode", icon: CarFront },
   { id: "replay", label: "Instant Replay", icon: Rewind },
   { id: "codes", label: "Fault Codes", icon: AlertTriangle },
   { id: "modules", label: "Modules", icon: Cpu },
@@ -39,6 +42,7 @@ const SHORT: Partial<Record<PageId, string>> = {
   quicktest: "Scan",
   inspection: "Inspect",
   dashboard: "Live",
+  drive: "Drive",
   replay: "Replay",
   codes: "Codes",
   functions: "Functions",
@@ -96,6 +100,11 @@ export default function App() {
             {page === "inspection" && <Inspection go={setPage} />}
             {page === "copilot" && <Copilot go={setPage} />}
             {page === "dashboard" && <Dashboard go={setPage} />}
+            {page === "drive" && (
+              <Suspense fallback={null}>
+                <Drive go={setPage} />
+              </Suspense>
+            )}
             {page === "replay" && <Replay go={setPage} />}
             {page === "codes" && <Codes go={setPage} />}
             {page === "modules" && <Modules go={setPage} />}
