@@ -38,6 +38,11 @@ iPad as the run destination and press Run. Xcode builds the Rust code itself
 3. Open ApexDiag > Connect > **Scan Bluetooth**. Allow Bluetooth when iPadOS
    asks. The adapter shows up (often as `VEEPEAK` or `OBDII`); tap Connect.
 4. If nothing shows, tick **Show all Bluetooth devices** and scan again.
+5. Open **Car Test** and run the 8 read-only steps. Nothing is written to
+   the car.
+6. Tap **Save**. The report (`.json`) and the raw adapter capture (`.log`)
+   go to the **Files** app > **On My iPad** > **ApexDiag**. Share them from
+   there (AirDrop to the Mac, or attach them to a message).
 
 ## Development
 
