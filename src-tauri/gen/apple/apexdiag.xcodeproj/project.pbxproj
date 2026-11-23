@@ -36,7 +36,9 @@
 		7729661AAD92BC0267DD5E1A /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist; path = Info.plist; sourceTree = "<group>"; };
 		78F52402C8740695822C78DD /* main.mm */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.cpp.objcpp; path = main.mm; sourceTree = "<group>"; };
 		9BE63242B58FBDA89E2CBD80 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A80008761BC5D8426F177FB8 /* car_test.rs */ = {isa = PBXFileReference; path = car_test.rs; sourceTree = "<group>"; };
 		B8B9F3A335F6E52258AC5459 /* assets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = assets; sourceTree = SOURCE_ROOT; };
+		BAA3D73248862E97D3FA70A9 /* repairs.rs */ = {isa = PBXFileReference; path = repairs.rs; sourceTree = "<group>"; };
 		C361C383D90FAB806B0CAAE0 /* UIKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = UIKit.framework; path = System/Library/Frameworks/UIKit.framework; sourceTree = SDKROOT; };
 		CA1ABB61FB14D839D18CD7FC /* MetalKit.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = MetalKit.framework; path = System/Library/Frameworks/MetalKit.framework; sourceTree = SDKROOT; };
 		EA29B09E885C41FD1A10001A /* LaunchScreen.storyboard */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; path = LaunchScreen.storyboard; sourceTree = "<group>"; };
@@ -108,8 +110,10 @@
 		A70E8BF56D7F013488C128EE /* src */ = {
 			isa = PBXGroup;
 			children = (
+				A80008761BC5D8426F177FB8 /* car_test.rs */,
 				513FC410EC2E07B8C6C388AD /* lib.rs */,
 				6D3CC371F859184EF6AED52B /* main.rs */,
+				BAA3D73248862E97D3FA70A9 /* repairs.rs */,
 				59C32EF62ED6FCADDE47D841 /* timemachine.rs */,
 			);
 			name = src;
@@ -156,18 +160,18 @@
 			path = apexdiag_iOS;
 			sourceTree = "<group>";
 		};
-		"TEMP_3EF5F3DE-EFB3-4AB8-97D7-CF1CBC3E5403" /* arm64 */ = {
-			isa = PBXGroup;
-			children = (
-			);
-			path = arm64;
-			sourceTree = "<group>";
-		};
-		"TEMP_AFAC2A05-8B2A-4B08-9ED6-FD9FA037235A" /* x86_64 */ = {
+		"TEMP_8AD408AA-6DFA-40BF-A182-EFD84A74104C" /* x86_64 */ = {
 			isa = PBXGroup;
 			children = (
 			);
 			path = x86_64;
+			sourceTree = "<group>";
+		};
+		"TEMP_D78805D8-50EC-4ACC-94E1-0BC9F5FC9F71" /* arm64 */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			path = arm64;
 			sourceTree = "<group>";
 		};
 /* End PBXGroup section */
