@@ -27,35 +27,48 @@ const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "activity", label: "Activity", icon: ListChecks },
 ];
 
+/** Labels for the narrow icon rail. */
+const SHORT: Partial<Record<PageId, string>> = {
+  quicktest: "Quick",
+  dashboard: "Live",
+  codes: "Codes",
+  functions: "Functions",
+  timemachine: "History",
+};
+
 export default function App() {
   const [page, setPage] = useState<PageId>("connect");
   const { connection } = useDiag();
 
   return (
-    <div className="flex h-screen">
-      <aside className="flex w-60 shrink-0 flex-col border-r border-white/[0.06] bg-black/20 px-3 pb-3 pt-5">
-        <div className="mb-6 flex items-center gap-2.5 px-2">
+    <div className="safe-shell flex h-dvh">
+      {/* Full sidebar on desktop and landscape iPad; an icon rail with short
+          labels on portrait iPad and in Split View. */}
+      <aside className="safe-bottom flex w-[76px] shrink-0 flex-col border-r border-white/[0.06] bg-black/20 px-2 pt-5 lg:w-60 lg:px-3">
+        <div className="mb-6 flex items-center justify-center gap-2.5 lg:justify-start lg:px-2">
           <div className="grid size-8 place-items-center rounded-lg bg-gradient-to-br from-cyan-400 to-blue-600 shadow-lg shadow-cyan-500/20">
             <Gauge className="size-4 text-white" />
           </div>
-          <div>
+          <div className="hidden lg:block">
             <div className="text-[15px] font-semibold leading-none tracking-tight">ApexDiag</div>
             <div className="mt-1 text-[10px] uppercase tracking-[0.18em] text-muted-foreground">Diagnostics</div>
           </div>
         </div>
-        <nav className="flex flex-col gap-0.5">
+        <nav className="flex flex-col gap-0.5 overflow-y-auto">
           {NAV.map(({ id, label, icon: Icon }) => (
             <button
               key={id}
               onClick={() => setPage(id)}
+              aria-label={label}
               className={cn(
-                "relative flex items-center gap-2.5 rounded-lg px-2.5 py-2 text-left text-sm transition",
-                page === id ? "bg-white/[0.07] text-foreground" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground",
+                "relative flex min-h-11 flex-col items-center justify-center gap-1 rounded-lg px-1 py-2 text-center text-[10px] leading-tight transition lg:flex-row lg:justify-start lg:gap-2.5 lg:px-2.5 lg:text-left lg:text-sm",
+                page === id ? "bg-white/[0.07] text-foreground" : "text-muted-foreground hover:bg-white/[0.04] hover:text-foreground active:bg-white/[0.06]",
               )}
             >
               {page === id && <span className="absolute inset-y-2 left-0 w-0.5 rounded-full bg-cyan-400" />}
-              <Icon className={cn("size-4", page === id && "text-cyan-300")} />
-              {label}
+              <Icon className={cn("size-5 lg:size-4", page === id && "text-cyan-300")} />
+              <span className="lg:hidden">{SHORT[id] ?? label}</span>
+              <span className="hidden lg:inline">{label}</span>
             </button>
           ))}
         </nav>
@@ -64,7 +77,7 @@ export default function App() {
 
       <div className="flex min-w-0 flex-1 flex-col">
         <StatusBar />
-        <main className="flex-1 overflow-auto px-8 pb-10 pt-6">
+        <main className="safe-bottom flex-1 overflow-auto overscroll-contain px-4 pb-10 pt-6 sm:px-6 lg:px-8">
           <div className="mx-auto max-w-[1400px]" key={page + (connection ? "c" : "")}>
             {page === "connect" && <Connect go={setPage} />}
             {page === "quicktest" && <QuickTest go={setPage} />}
@@ -88,21 +101,22 @@ function ConnectionCard({ onClick }: { onClick: () => void }) {
     <button
       onClick={onClick}
       className="mt-auto rounded-xl border border-white/[0.07] bg-white/[0.03] p-3 text-left transition hover:border-white/15"
+      aria-label={connection ? "Connected" : "Not connected"}
     >
-      <div className="flex items-center gap-2 text-xs">
+      <div className="flex items-center justify-center gap-2 text-xs lg:justify-start">
         <span className={cn("relative size-2 rounded-full", connection ? "bg-emerald-400" : "bg-white/25")}>
           {connection && <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400/60" />}
         </span>
-        <span className="font-medium">{connection ? "Connected" : "Not connected"}</span>
+        <span className="hidden font-medium lg:inline">{connection ? "Connected" : "Not connected"}</span>
       </div>
       {connection && (
-        <>
+        <div className="hidden lg:block">
           <div className="mt-2 truncate text-xs text-muted-foreground">{connection.device.name}</div>
           <div className="mt-0.5 truncate text-[11px] text-foreground/80">
             {connection.vehicle.pack.brand} {connection.vehicle.pack.model}
           </div>
           <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/80">{connection.vin}</div>
-        </>
+        </div>
       )}
     </button>
   );
@@ -115,10 +129,10 @@ function StatusBar() {
   const volts = live.get(0x42) ?? vehicle?.state.battery_v ?? undefined;
   const running = rpm !== undefined ? rpm > 300 : undefined;
   return (
-    <div className="flex h-12 shrink-0 items-center justify-end gap-2 border-b border-white/[0.06] px-6" data-tauri-drag-region>
+    <div className="flex h-12 shrink-0 items-center justify-end gap-2 overflow-x-auto border-b border-white/[0.06] px-4 sm:px-6" data-tauri-drag-region>
       {connection?.simulated && (
         <span className="mr-auto rounded-md bg-amber-400/10 px-2 py-1 text-[11px] font-medium text-amber-300 ring-1 ring-inset ring-amber-400/25">
-          DEMO CAR · simulated data
+          DEMO CAR<span className="hidden sm:inline"> · simulated data</span>
         </span>
       )}
       {connection ? (
@@ -136,7 +150,7 @@ function StatusBar() {
 
 function Chip({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: string; value: string; tone: "ok" | "warn" | "info" | "muted" }) {
   return (
-    <div className="flex items-center gap-2 rounded-lg bg-white/[0.04] px-2.5 py-1 text-xs ring-1 ring-inset ring-white/[0.06]">
+    <div className="flex shrink-0 items-center gap-2 rounded-lg bg-white/[0.04] px-2.5 py-1 text-xs ring-1 ring-inset ring-white/[0.06]">
       <Icon
         className={cn(
           "size-3.5",
@@ -146,7 +160,7 @@ function Chip({ icon: Icon, label, value, tone }: { icon: LucideIcon; label: str
           tone === "muted" && "text-muted-foreground",
         )}
       />
-      <span className="text-muted-foreground">{label}</span>
+      <span className="hidden text-muted-foreground md:inline">{label}</span>
       <span className="font-medium tabular-nums">{value}</span>
     </div>
   );
