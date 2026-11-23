@@ -455,16 +455,47 @@ fn list_devices() -> Vec<DiscoveredDevice> {
             available: true,
         })
         .collect();
-    out.push(DiscoveredDevice {
-        id: "veepeak-ble".into(),
-        name: "Veepeak OBDCheck BLE".into(),
-        detail: "Bluetooth LE adapter. Live connection arrives in the next step.".into(),
-        transport: TransportKind::Ble {
-            peripheral_id: String::new(),
-        },
-        available: false,
-    });
+    // Bluetooth LE adapters from the last scan, ahead of the practice cars.
+    let seen = ble_seen().lock().map(|v| v.clone()).unwrap_or_default();
+    if seen.is_empty() {
+        out.insert(
+            0,
+            DiscoveredDevice {
+                id: "ble-scan".into(),
+                name: "Bluetooth OBD adapter".into(),
+                detail: "Veepeak OBDCheck BLE, vLinker, OBDLink CX and other ELM327 BLE adapters. \
+                         Plug it in, turn the ignition on, then scan."
+                    .into(),
+                transport: TransportKind::Ble {
+                    peripheral_id: String::new(),
+                },
+                available: false,
+            },
+        );
+    } else {
+        out.splice(0..0, seen);
+    }
     out
+}
+
+/// Adapters found by the last Bluetooth scan.
+fn ble_seen() -> &'static std::sync::Mutex<Vec<DiscoveredDevice>> {
+    static SEEN: std::sync::OnceLock<std::sync::Mutex<Vec<DiscoveredDevice>>> =
+        std::sync::OnceLock::new();
+    SEEN.get_or_init(Default::default)
+}
+
+/// Scans for Bluetooth LE adapters for a few seconds. With `all`, lists every
+/// named Bluetooth device, not only ones that look like OBD adapters.
+#[tauri::command]
+async fn scan_ble(all: Option<bool>) -> CmdResult<Vec<DiscoveredDevice>> {
+    let found = transport::ble::scan(std::time::Duration::from_secs(4), all.unwrap_or(false))
+        .await
+        .map_err(|e| CmdError::new("bluetooth", e.to_string()))?;
+    if let Ok(mut seen) = ble_seen().lock() {
+        *seen = found.clone();
+    }
+    Ok(found)
 }
 
 fn sim_car_for(device_id: &str) -> Option<&'static SimCar> {
@@ -537,6 +568,15 @@ async fn connect(
                 } else {
                     SimEngine::IgnitionOn
                 },
+            ))
+        }
+        (TransportKind::Ble { peripheral_id }, None) if !peripheral_id.is_empty() => {
+            Box::new(transport::ble::BleTransport::new(peripheral_id.clone()))
+        }
+        (TransportKind::Ble { .. }, None) => {
+            return Err(CmdError::new(
+                "unavailable",
+                "Scan for Bluetooth adapters first.",
             ))
         }
         _ => {
@@ -1475,6 +1515,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             catalog,
             list_devices,
+            scan_ble,
             connect,
             disconnect,
             read_live,
