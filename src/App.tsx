@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Activity, AlertTriangle, BatteryMedium, Cable, Cpu, Gauge, History, ListChecks, Power, Wrench, type LucideIcon } from "lucide-react";
+import { Activity, AlertTriangle, BatteryMedium, Cable, Cpu, Gauge, History, ListChecks, Power, Radar, Wrench, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useDiag } from "@/lib/store";
 import { fmt } from "@/lib/format";
@@ -10,11 +10,13 @@ import Modules from "@/pages/Modules";
 import Functions from "@/pages/Functions";
 import ActivityPage from "@/pages/Activity";
 import TimeMachine from "@/pages/TimeMachine";
+import QuickTest from "@/pages/QuickTest";
 
-export type PageId = "connect" | "dashboard" | "codes" | "modules" | "functions" | "timemachine" | "activity";
+export type PageId = "connect" | "quicktest" | "dashboard" | "codes" | "modules" | "functions" | "timemachine" | "activity";
 
 const NAV: { id: PageId; label: string; icon: LucideIcon }[] = [
   { id: "connect", label: "Connect", icon: Cable },
+  { id: "quicktest", label: "Quick Test", icon: Radar },
   { id: "dashboard", label: "Live Data", icon: Activity },
   { id: "codes", label: "Fault Codes", icon: AlertTriangle },
   { id: "modules", label: "Modules", icon: Cpu },
@@ -63,6 +65,7 @@ export default function App() {
         <main className="flex-1 overflow-auto px-8 pb-10 pt-6">
           <div className="mx-auto max-w-[1400px]" key={page + (connection ? "c" : "")}>
             {page === "connect" && <Connect go={setPage} />}
+            {page === "quicktest" && <QuickTest go={setPage} />}
             {page === "dashboard" && <Dashboard go={setPage} />}
             {page === "codes" && <Codes go={setPage} />}
             {page === "modules" && <Modules go={setPage} />}
@@ -92,6 +95,9 @@ function ConnectionCard({ onClick }: { onClick: () => void }) {
       {connection && (
         <>
           <div className="mt-2 truncate text-xs text-muted-foreground">{connection.device.name}</div>
+          <div className="mt-0.5 truncate text-[11px] text-foreground/80">
+            {connection.vehicle.pack.brand} {connection.vehicle.pack.model}
+          </div>
           <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground/80">{connection.vin}</div>
         </>
       )}

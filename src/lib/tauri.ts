@@ -55,19 +55,67 @@ export interface PidInfo {
 
 export type SystemId = "powertrain" | "chassis" | "body" | "comfort" | "infotainment" | "safety";
 
+export type ModuleLink = { kind: "bmw_extended" } | { kind: "can11"; tx: number; rx: number };
+
 export interface ModuleInfo {
   name: string;
   description: string;
   role: string;
   address: number;
   system: SystemId;
+  link: ModuleLink;
+  protocol: "kwp2000" | "uds";
+  /** Position on the top-down map (viewBox 240 x 470, front at the top). */
+  spot: { x: number; y: number; area: string };
+}
+
+export type Make = "bmw" | "mercedes_benz" | "toyota" | "honda" | "generic";
+
+export interface Pack {
+  id: string;
+  make: Make;
+  brand: string;
+  model: string;
+  chassis: string;
+  years: string;
+  body: "suv" | "sedan";
+  layout: "documented" | "demo";
+  dealer_tool: string;
+  modules: ModuleInfo[];
+  records: RecordDef[];
+  jobs: { function_id: string; oem_job: string | null; module: number; status: "verified" | "pending_capture" }[];
+  functions: string[];
+  notes: string[];
+}
+
+export interface VinInfo {
+  vin: string;
+  well_formed: boolean;
+  demo: boolean;
+  wmi: string;
+  region: string;
+  country: string | null;
+  make: Make;
+  manufacturer: string | null;
+  model_year: number | null;
+  plant: string | null;
+  serial: string;
+  check_digit_ok: boolean | null;
+  check_digit_required: boolean;
+}
+
+export interface VehicleView {
+  vin_info: VinInfo | null;
+  pack: Pack;
+  scan_addresses: number[];
+  demo_story: string | null;
 }
 
 export type RecordKind = "coding" | "adaptation";
 
 export interface RecordDef {
   module: number;
-  lid: number;
+  id: number;
   name: string;
   kind: RecordKind;
   explain: string;
@@ -78,8 +126,7 @@ export interface Catalog {
   tiers: Tier[];
   functions: FunctionInfo[];
   pids: PidInfo[];
-  modules: ModuleInfo[];
-  records: RecordDef[];
+  packs: Pack[];
 }
 
 export type SnapshotKind = "manual" | "automatic" | "demo";
@@ -94,13 +141,13 @@ export interface Snapshot {
   reason: string;
   simulated: boolean;
   identification: string | null;
-  records: { lid: number; raw: number[] }[];
+  records: { id: number; raw: number[] }[];
   faults: { code: string; status: number }[];
   missing: number[];
 }
 
 export interface RecordChange {
-  lid: number;
+  id: number;
   name: string;
   kind: RecordKind;
   explain: string;
@@ -150,6 +197,7 @@ export interface ConnectReport {
   mil: MilStatus | null;
   supported_pids: number[];
   simulated: boolean;
+  vehicle: VehicleView;
   transcript: string[];
 }
 
@@ -190,6 +238,30 @@ export interface ModuleScan {
   module: ModuleInfo;
   present: boolean;
   faults: number | null;
+  codes: ModuleFault[];
+  elapsed_ms: number;
+}
+
+export interface Monitor {
+  id: string;
+  name: string;
+  supported: boolean;
+  complete: boolean;
+  explain: string;
+}
+
+export interface Readiness {
+  mil_on: boolean;
+  dtc_count: number;
+  compression_ignition: boolean;
+  monitors: Monitor[];
+}
+
+export interface EmissionsReport {
+  readiness: Readiness | null;
+  freeze_frame: { dtc: string; values: [number, number][] } | null;
+  km_since_clear: number | null;
+  warmups_since_clear: number | null;
 }
 
 export interface ModuleFault {
@@ -254,6 +326,9 @@ export const api = {
   readObdCodes: () => call<ObdCodes>("read_obd_codes"),
   clearObdCodes: () => call<Dtc[]>("clear_obd_codes"),
   scanModules: () => call<ModuleScan[]>("scan_modules"),
+  scanModule: (address: number) => call<ModuleScan>("scan_module", { address }),
+  logQuickTest: (found: number, faults: number) => call<void>("log_quick_test", { found, faults }),
+  readEmissions: () => call<EmissionsReport>("read_emissions"),
   readModule: (address: number) => call<ModuleDetail>("read_module", { address }),
   clearModuleCodes: (address: number) => call<void>("clear_module_codes", { address }),
   runFunction: (id: string) => call<FunctionRun>("run_function", { id }),

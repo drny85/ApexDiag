@@ -287,4 +287,37 @@ mod tests {
         assert_eq!(store.get(&first.vin, "../../etc/passwd"), None);
         assert!(store.list("OTHERVIN").is_empty());
     }
+
+    #[test]
+    fn seeds_other_demo_cars_from_their_current_values() {
+        use protocol_core::packs::toyota_xv70::{BODY, ECM, METER, PACK};
+        let store = temp_store();
+        let vin = "SIMULATED0CAM0003";
+        let current = vec![
+            ((ECM.address, 0x2101), 420i16.to_be_bytes().to_vec()),
+            ((BODY.address, 0x2201), vec![1]),
+            ((BODY.address, 0x2203), vec![15]),
+            ((METER.address, 0x2301), vec![1]),
+        ];
+        seed_generic_history(&store, vin, &PACK, &current, 1_800_000_000_000).unwrap();
+        let all = store.list(vin);
+        assert_eq!(all.len(), 3);
+        let ecm = all
+            .iter()
+            .find(|s| s.module_address == ECM.address)
+            .unwrap();
+        // Learned values were smaller a month ago.
+        assert_eq!(ecm.record(0x2101), Some(&168i16.to_be_bytes()[..]));
+        // Exactly one owner setting differs, so Restore has something to do.
+        let changed = all
+            .iter()
+            .flat_map(|s| s.records.iter().map(move |r| (s.module_address, r)))
+            .filter(|(a, r)| {
+                current
+                    .iter()
+                    .any(|((ca, id), raw)| ca == a && *id == r.id && *raw != r.raw && *id != 0x2101)
+            })
+            .count();
+        assert_eq!(changed, 1);
+    }
 }

@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Clock, Eraser, Lock, Plug, RefreshCw, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Camera, CheckCircle2, CircleDashed, Clock, Eraser, Leaf, Lock, Plug, RefreshCw, ShieldCheck } from "lucide-react";
 import PageHeader from "@/components/PageHeader";
 import Empty from "@/components/Empty";
 import GateDialog from "@/components/GateDialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { useDiag } from "@/lib/store";
-import { api, asCmdError, type Dtc, type ObdCodes } from "@/lib/tauri";
+import { api, asCmdError, type Dtc, type EmissionsReport, type ObdCodes, type PidInfo } from "@/lib/tauri";
+import { digitsFor, fmt } from "@/lib/format";
 import { cn } from "@/lib/utils";
 import type { PageId } from "@/App";
 
@@ -37,6 +38,7 @@ const GROUPS = [
 export default function Codes({ go }: { go: (p: PageId) => void }) {
   const { connection, catalog, revision } = useDiag();
   const [codes, setCodes] = useState<ObdCodes | null>(null);
+  const [emissions, setEmissions] = useState<EmissionsReport | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [clearing, setClearing] = useState(false);
@@ -46,6 +48,7 @@ export default function Codes({ go }: { go: (p: PageId) => void }) {
     setError(null);
     try {
       setCodes(await api.readObdCodes());
+      setEmissions(await api.readEmissions().catch(() => null));
     } catch (e) {
       setError(asCmdError(e).message);
     } finally {
@@ -77,7 +80,7 @@ export default function Codes({ go }: { go: (p: PageId) => void }) {
     <div>
       <PageHeader
         title="Fault Codes"
-        subtitle="Generic OBD-II codes from the engine module. For BMW codes from every module (body, brakes, transmission), open Modules."
+        subtitle={`Generic OBD-II codes, emissions readiness and freeze frame from the engine module. For ${connection.vehicle.pack.make === "generic" ? "maker" : connection.vehicle.pack.brand} codes from every module (body, brakes, transmission), open Modules or run a Quick Test.`}
         actions={
           <>
             <Button variant="outline" onClick={load} disabled={loading}>
@@ -139,6 +142,8 @@ export default function Codes({ go }: { go: (p: PageId) => void }) {
         })}
       </div>
 
+      {emissions && <Emissions report={emissions} pids={catalog?.pids ?? []} />}
+
       <GateDialog
         fn={clearFn}
         open={clearing}
@@ -154,6 +159,95 @@ export default function Codes({ go }: { go: (p: PageId) => void }) {
           ];
         }}
       />
+    </div>
+  );
+}
+
+function Emissions({ report, pids }: { report: EmissionsReport; pids: PidInfo[] }) {
+  const r = report.readiness;
+  const supported = r?.monitors.filter((m) => m.supported) ?? [];
+  const incomplete = supported.filter((m) => !m.complete);
+  const ff = report.freeze_frame;
+  return (
+    <div className="mt-5 grid gap-4 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)]">
+      <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-5">
+        <div className="flex items-center justify-between">
+          <h3 className="flex items-center gap-2 font-medium">
+            <Leaf className="size-4 text-emerald-300" /> Emissions readiness
+          </h3>
+          {r &&
+            (r.mil_on ? (
+              <Badge variant="danger">Would fail: check-engine light on</Badge>
+            ) : (
+              <Badge variant={incomplete.length ? "warn" : "ok"}>
+                {incomplete.length ? `${incomplete.length} not ready` : "Ready for inspection"}
+              </Badge>
+            ))}
+        </div>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          The engine runs self-tests (monitors) while you drive. An inspection station plugs in and checks that they have all finished. Clearing codes
+          or disconnecting the battery resets them.
+          {report.km_since_clear !== null && ` ${fmt(report.km_since_clear)} km driven since codes were last cleared.`}
+        </p>
+        {!r ? (
+          <p className="mt-3 text-sm text-muted-foreground">Readiness not available.</p>
+        ) : (
+          <div className="mt-4 grid gap-2 sm:grid-cols-2">
+            {supported.map((m) => (
+              <div
+                key={m.id}
+                className={cn(
+                  "rounded-xl border p-3",
+                  m.complete ? "border-emerald-400/15 bg-emerald-400/[0.03]" : "border-amber-400/25 bg-amber-400/[0.05]",
+                )}
+              >
+                <div className="flex items-center gap-2 text-sm font-medium">
+                  {m.complete ? <CheckCircle2 className="size-4 text-emerald-400" /> : <CircleDashed className="size-4 text-amber-300" />}
+                  {m.name}
+                  <span className={cn("ml-auto text-[11px]", m.complete ? "text-emerald-300/80" : "text-amber-300")}>
+                    {m.complete ? "Complete" : "Not yet run"}
+                  </span>
+                </div>
+                <p className="mt-1 text-[11px] leading-snug text-muted-foreground">{m.explain}</p>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+      <section className="rounded-2xl border border-white/[0.07] bg-white/[0.02] p-5">
+        <h3 className="flex items-center gap-2 font-medium">
+          <Camera className="size-4 text-sky-300" /> Freeze frame
+        </h3>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          A snapshot the engine took the moment a code set: how fast, how hot, how much load. It tells you the conditions to reproduce the fault.
+        </p>
+        {!ff ? (
+          <div className="mt-4 flex items-center gap-2 text-sm text-muted-foreground">
+            <CheckCircle2 className="size-4 text-emerald-400/70" /> No freeze frame stored.
+          </div>
+        ) : (
+          <>
+            <div className="mt-4 flex items-center gap-2">
+              <span className="text-xs text-muted-foreground">Captured when</span>
+              <span className="font-mono font-semibold tracking-wider">{ff.dtc}</span>
+              <span className="text-xs text-muted-foreground">set</span>
+            </div>
+            <dl className="mt-3 divide-y divide-white/[0.05] rounded-xl bg-black/20">
+              {ff.values.map(([pid, v]) => {
+                const info = pids.find((p) => p.pid === pid);
+                return (
+                  <div key={pid} className="flex items-center justify-between px-3 py-2 text-sm">
+                    <dt className="text-muted-foreground">{info?.name ?? `PID ${pid}`}</dt>
+                    <dd className="font-medium tabular-nums">
+                      {fmt(v, info ? digitsFor(info.unit) : 0)} <span className="text-xs text-muted-foreground">{info?.unit}</span>
+                    </dd>
+                  </div>
+                );
+              })}
+            </dl>
+          </>
+        )}
+      </section>
     </div>
   );
 }

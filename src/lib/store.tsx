@@ -120,6 +120,12 @@ export function useDiag() {
   return ctx;
 }
 
+/** The vehicle pack of the connected car. */
+export function usePack() {
+  const { connection } = useDiag();
+  return connection?.vehicle.pack ?? null;
+}
+
 export function usePid(pid: number) {
   const { catalog } = useDiag();
   return catalog?.pids.find((p) => p.pid === pid);

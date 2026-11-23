@@ -162,7 +162,7 @@ function KeyProgramming() {
       <path d="M124 51 H156" stroke={DIM} strokeDasharray="3 4" />
       {/* CAS with 10 key slots */}
       <rect x="160" y="22" width="140" height="60" rx="8" stroke={LINE} />
-      <text x="230" y="36" textAnchor="middle" fontSize="8" fill="rgba(255,255,255,0.45)">CAS key slots</text>
+      <text x="230" y="36" textAnchor="middle" fontSize="8" fill="rgba(255,255,255,0.45)">Key slots</text>
       {Array.from({ length: 10 }).map((_, i) => {
         const x = 170 + (i % 5) * 26;
         const y = 44 + Math.floor(i / 5) * 18;

@@ -1,4 +1,4 @@
-import type { TierId } from "./tauri";
+import type { ModuleInfo, TierId } from "./tauri";
 
 export const hex = (n: number, width = 2) => "0x" + n.toString(16).toUpperCase().padStart(width, "0");
 
@@ -35,3 +35,13 @@ export const SYSTEM_LABEL: Record<string, string> = {
 export function timeOf(ms: number) {
   return new Date(ms).toLocaleTimeString(undefined, { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
+
+/** How a module is reached, in one line: IDs and diagnostic language. */
+export function linkText(m: ModuleInfo) {
+  if (m.link.kind === "bmw_extended") {
+    return `Address ${hex(m.address)} · request 0x6F1 · reply ${hex(0x600 + m.address, 3)} · KWP2000 over D-CAN`;
+  }
+  return `Request ${hex(m.link.tx, 3)} · reply ${hex(m.link.rx, 3)} · ${m.protocol === "uds" ? "UDS (ISO 14229)" : "KWP2000"} over CAN`;
+}
+
+export const PROTOCOL_LABEL = { kwp2000: "KWP2000", uds: "UDS" } as const;

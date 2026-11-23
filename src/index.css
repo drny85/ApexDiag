@@ -133,6 +133,12 @@
   0%, 15% { transform: translateX(0); }
   65%, 100% { transform: translateX(var(--sweep, 180px)); }
 }
+@keyframes bus-packet {
+  from { left: 0; opacity: 0; }
+  10% { opacity: 1; }
+  90% { opacity: 1; }
+  to { left: 100%; opacity: 0; }
+}
 @keyframes ill-fade-out { 0%, 25% { opacity: 1; } 60%, 100% { opacity: 0.08; } }
 @keyframes ill-needle {
   0%, 20% { transform: rotate(var(--from, 50deg)); }

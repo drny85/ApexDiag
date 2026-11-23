@@ -18,7 +18,7 @@ import GateDialog from "@/components/GateDialog";
 import InfoTip from "@/components/InfoTip";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { useDiag } from "@/lib/store";
+import { useDiag, usePack } from "@/lib/store";
 import { api, asCmdError, type Comparison, type ModuleInfo, type RecordChange, type Snapshot } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import type { PageId } from "@/App";
@@ -27,6 +27,7 @@ const LIVE = "live";
 
 export default function TimeMachine({ go }: { go: (p: PageId) => void }) {
   const { connection, catalog, bump } = useDiag();
+  const pack = usePack();
   const [snapshots, setSnapshots] = useState<Snapshot[] | null>(null);
   const [address, setAddress] = useState<number | null>(null);
   const [fromId, setFromId] = useState<string | null>(null);
@@ -38,11 +39,11 @@ export default function TimeMachine({ go }: { go: (p: PageId) => void }) {
   const [restoring, setRestoring] = useState(false);
 
   const modules = useMemo(() => {
-    if (!catalog) return [];
-    const withRecords = new Set(catalog.records.map((r) => r.module));
+    if (!pack) return [];
+    const withRecords = new Set(pack.records.map((r) => r.module));
     const withSnaps = new Set((snapshots ?? []).map((s) => s.module_address));
-    return catalog.modules.filter((m) => withRecords.has(m.address) || withSnaps.has(m.address));
-  }, [catalog, snapshots]);
+    return pack.modules.filter((m) => withRecords.has(m.address) || withSnaps.has(m.address));
+  }, [pack, snapshots]);
 
   const reload = useCallback(async () => {
     try {
@@ -58,7 +59,7 @@ export default function TimeMachine({ go }: { go: (p: PageId) => void }) {
 
   // Default to the engine module, the most interesting one.
   useEffect(() => {
-    if (address === null && modules.length) setAddress(modules.find((m) => m.name === "DME")?.address ?? modules[0]!.address);
+    if (address === null && modules.length) setAddress(modules.find((m) => m.system === "powertrain")?.address ?? modules[0]!.address);
   }, [modules, address]);
 
   const timeline = useMemo(() => (snapshots ?? []).filter((s) => s.module_address === address), [snapshots, address]);
@@ -145,7 +146,7 @@ export default function TimeMachine({ go }: { go: (p: PageId) => void }) {
           <InfoGlyph />
           <p className="text-sky-50/90">
             On a real car the Time Machine saves identification and fault memory today. Coding and learned values are added module by module as
-            each one is verified on your X5, so nothing unverified is ever sent.
+            each one is verified on a real car of this model, so nothing unverified is ever sent.
           </p>
         </div>
       )}
@@ -239,7 +240,7 @@ export default function TimeMachine({ go }: { go: (p: PageId) => void }) {
             </h4>
             <div className="divide-y divide-white/[0.06] rounded-xl border border-white/10">
               {writes.map((w) => (
-                <div key={w.lid} className="flex items-center justify-between gap-3 px-3 py-2.5 text-sm">
+                <div key={w.id} className="flex items-center justify-between gap-3 px-3 py-2.5 text-sm">
                   <span>{w.name}</span>
                   <span className="flex items-center gap-2 font-mono text-xs">
                     <span className="text-muted-foreground line-through decoration-white/30">{w.after}</span>
@@ -521,7 +522,7 @@ function RecordSection({
       <div className="divide-y divide-white/[0.05]">
         {rows.map((r) => (
           <div
-            key={r.lid}
+            key={r.id}
             className={cn(
               "grid grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)] items-center gap-4 px-4 py-3",
               chart && "md:grid-cols-[minmax(0,1.1fr)_minmax(0,0.9fr)_minmax(0,1fr)]",
