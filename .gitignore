@@ -1,0 +1,14 @@
+# Rust
+/target/
+**/target/
+# Node
+node_modules/
+dist/
+# Tauri
+src-tauri/gen/schemas/
+# OS / editor
+.DS_Store
+.idea/
+.vscode/*
+!.vscode/extensions.json
+*.log
